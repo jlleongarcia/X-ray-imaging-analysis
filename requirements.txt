@@ -1,0 +1,6 @@
+pydicom==3.0.1
+numpy==2.3.0
+opencv-python==4.11.0.86
+matplotlib==3.10.3
+scikit-image==0.25.2
+streamlit==1.45.1

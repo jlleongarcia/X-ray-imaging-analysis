@@ -5,7 +5,7 @@ from PIL import Image # Used for displaying images in Streamlit
 import os
 import tempfile
 
-def _calculate_uniformity_term(val_i, val_mean, epsilon=1e-9):
+def _calculate_uniformity_term(val_i, val_mean):
     """
     Calculates the term abs(val_i - val_mean) / val_mean for uniformity.
     Handles cases where val_mean is zero or close to zero.
@@ -14,20 +14,13 @@ def _calculate_uniformity_term(val_i, val_mean, epsilon=1e-9):
     Args:
         val_i (float): The individual ROI value (e.g., PV_i or SD_i).
         val_mean (float): The reference mean value (e.g., MeanPV, PV_8n, MeanSD, SD_8n).
-        epsilon (float): A small number to handle near-zero denominators.
 
     Returns:
         float: The calculated uniformity term. Can be 0.0, a positive float, or np.inf.
     """
     abs_diff = np.abs(val_i - val_mean)
 
-    if val_mean < epsilon:  # If val_mean is effectively zero
-        if abs_diff < epsilon:  # And val_i is also effectively equal to val_mean (i.e., zero)
-            return 0.0
-        else:  # val_i is different from zero, val_mean is zero (infinite non-uniformity)
-            return np.inf
-    else:  # val_mean is significantly non-zero
-        return abs_diff / val_mean
+    return abs_diff / val_mean
 
 def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spacing_col):
     """
@@ -62,8 +55,6 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
     if pixel_spacing_row <= 0 or pixel_spacing_col <= 0:
         raise ValueError("Pixel spacing values must be positive.")
 
-    epsilon = 1e-9  # Small value for safe division and zero-checks
-
     # --- 1. Define central ROI (80% of total area) ---
     H_orig, W_orig = image_array.shape
 
@@ -96,6 +87,7 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
 
     # --- 2. Calculate MeanPV and MeanSD for the central ROI ---
     MeanPV_central = np.mean(central_roi_data)
+    MeanPV_central = np.abs(MeanPV_central) # Ensure positive
     MeanSD_central = np.std(central_roi_data)
 
     # --- 3. Define moving ROI parameters (30mm x 30mm, step 15mm) ---
@@ -165,8 +157,8 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
                 continue # Should not occur if grids populated correctly
 
             # Global Uniformity terms
-            gu_pv_terms.append(_calculate_uniformity_term(pv_i, MeanPV_central, epsilon))
-            gu_snr_terms.append(_calculate_uniformity_term(sd_i, MeanSD_central, epsilon))
+            gu_pv_terms.append(_calculate_uniformity_term(pv_i, MeanPV_central))
+            gu_snr_terms.append(_calculate_uniformity_term(sd_i, MeanSD_central))
 
             # Local Uniformity terms (only for ROIs with 8 valid neighbors)
             if 0 < r_idx < num_rois_y - 1 and 0 < c_idx < num_rois_x - 1:
@@ -190,10 +182,11 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
                 
                 if valid_neighbors and len(neighbor_pvs) == 8: # Ensure all 8 neighbors were valid and collected
                     pv_8n = np.mean(neighbor_pvs)
-                    lu_pv_terms.append(_calculate_uniformity_term(pv_i, pv_8n, epsilon))
+                    pv_8n = np.abs(pv_8n) # Ensure positive
+                    lu_pv_terms.append(_calculate_uniformity_term(pv_i, pv_8n))
 
                     sd_8n = np.mean(neighbor_sds) # Mean of neighbor SDs
-                    lu_snr_terms.append(_calculate_uniformity_term(sd_i, sd_8n, epsilon))
+                    lu_snr_terms.append(_calculate_uniformity_term(sd_i, sd_8n))
     
     # Final metrics: Max of the calculated terms.
     # If a list of terms is empty (e.g., no ROIs for LU), result is np.nan.
@@ -274,7 +267,7 @@ def run_streamlit_app():
 
             if len(display_array.shape) == 2:
                 img_pil = Image.fromarray(display_array, mode='L')
-                st.image(img_pil, caption="Original Image (Normalized for Display)", use_column_width=True)
+                st.image(img_pil, caption="Original Image (Normalized for Display)", use_container_width=False)
             else:
                 st.warning(f"Image has unexpected shape {image_array.shape}. Cannot display directly.")
 

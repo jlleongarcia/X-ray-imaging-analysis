@@ -20,7 +20,7 @@ def _calculate_uniformity_term(val_i, val_mean):
     """
     abs_diff = np.abs(val_i - val_mean)
 
-    return abs_diff / val_mean
+    return abs_diff / abs(val_mean)
 
 def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spacing_col):
     """
@@ -87,7 +87,6 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
 
     # --- 2. Calculate MeanPV and MeanSD for the central ROI ---
     MeanPV_central = np.mean(central_roi_data)
-    MeanPV_central = np.abs(MeanPV_central) # Ensure positive
     MeanSD_central = np.std(central_roi_data)
 
     # --- 3. Define moving ROI parameters (30mm x 30mm, step 15mm) ---
@@ -182,7 +181,6 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
                 
                 if valid_neighbors and len(neighbor_pvs) == 8: # Ensure all 8 neighbors were valid and collected
                     pv_8n = np.mean(neighbor_pvs)
-                    pv_8n = np.abs(pv_8n) # Ensure positive
                     lu_pv_terms.append(_calculate_uniformity_term(pv_i, pv_8n))
 
                     sd_8n = np.mean(neighbor_sds) # Mean of neighbor SDs
@@ -191,17 +189,17 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
     # Final metrics: Max of the calculated terms.
     # If a list of terms is empty (e.g., no ROIs for LU), result is np.nan.
     # If all terms are 0, result is 0. If np.inf is present, it becomes the max.
-    GU_PV = np.max(gu_pv_terms) if gu_pv_terms else np.nan
-    LU_PV = np.max(lu_pv_terms) if lu_pv_terms else np.nan
-    GU_SNR = np.max(gu_snr_terms) if gu_snr_terms else np.nan
-    LU_SNR = np.max(lu_snr_terms) if lu_snr_terms else np.nan
+    GU_PV = np.max(gu_pv_terms)*100 if gu_pv_terms else np.nan
+    LU_PV = np.max(lu_pv_terms)*100 if lu_pv_terms else np.nan
+    GU_SNR = np.max(gu_snr_terms)*100 if gu_snr_terms else np.nan
+    LU_SNR = np.max(lu_snr_terms)*100 if lu_snr_terms else np.nan
     
     return {
         "GU_PV": GU_PV,
         "LU_PV": LU_PV,
         "GU_SNR": GU_SNR,
         "LU_SNR": LU_SNR,
-        "MeanPV_central": MeanPV_central,
+        "MeanPV_central": abs(MeanPV_central),
         "MeanSD_central": MeanSD_central,
         "central_roi_coords": central_roi_coords,
         "num_moving_rois": num_rois_y * num_rois_x,

@@ -7,8 +7,7 @@ import tempfile
 
 def _calculate_uniformity_term(val_i, val_mean):
     """
-    Calculates the term abs(val_i - val_mean) / val_mean for uniformity.
-    Handles cases where val_mean is zero or close to zero.
+    Calculates the term abs(val_i - val_mean) / abs(val_mean) for uniformity.
     Assumes val_mean is non-negative (typical for pixel values and standard deviations).
 
     Args:
@@ -18,9 +17,12 @@ def _calculate_uniformity_term(val_i, val_mean):
     Returns:
         float: The calculated uniformity term. Can be 0.0, a positive float, or np.inf.
     """
-    abs_diff = np.abs(val_i - val_mean)
 
-    return abs_diff / abs(val_mean)
+    # Both val_i and val_mean are finite at this point
+    abs_diff = np.abs(val_i - val_mean)
+    denominator = np.abs(val_mean)
+
+    return abs_diff / denominator
 
 def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spacing_col):
     """
@@ -32,10 +34,10 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
     3. Performing a sliding window analysis with a 30mm x 30mm ROI moving in 15mm steps within the central ROI.
     4. For each moving ROI, its local mean (PV_i) and local standard deviation (SD_i) are found.
     5. Calculating:
-        - GU_PV: Max(abs(PV_i - MeanPV_central) / MeanPV_central)
-        - LU_PV: Max(abs(PV_i - PV_8n) / PV_8n) (PV_8n is mean of 8 neighbors)
-        - GU_SNR: Max(abs(SD_i - MeanSD_central) / MeanSD_central)
-        - LU_SNR: Max(abs(SD_i - SD_8n) / SD_8n) (SD_8n is mean of 8 neighbors' SDs)
+        - GU_PV: Max(abs(PV_i - MeanPV_central) / abs(MeanPV_central))
+        - LU_PV: Max(abs(PV_i - PV_8n) / abs(PV_8n)) (PV_8n is mean of 8 neighbors' PVs)
+        - GU_SNR: Max(abs(SNR_i - MeanSNR_central) / abs(MeanSNR_central)), where SNR = PV/SD
+        - LU_SNR: Max(abs(SNR_i - SNR_8n) / abs(SNR_8n)) (SNR_8n is mean of 8 neighbors' SNRs)
 
     Args:
         image_array (np.ndarray): The 2D NumPy array representing the X-ray image pixels.
@@ -46,7 +48,10 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
         dict: A dictionary containing the calculated metrics:
             "GU_PV", "LU_PV", "GU_SNR", "LU_SNR",
             "MeanPV_central", "MeanSD_central",
+            "MeanSNR_central", (calculated as MeanPV_central / MeanSD_central)
             "central_roi_coords" (tuple: y_start, x_start, y_end, x_end),
+            "moving_roi_pvs" (np.ndarray): Grid of mean pixel values for each moving ROI.
+            "moving_roi_sds" (np.ndarray): Grid of standard deviations for each moving ROI.
             "num_moving_rois", "moving_roi_grid_shape" (tuple: rows, cols).
             Metrics can be np.nan if prerequisites are not met (e.g., image too small).
     """
@@ -65,8 +70,10 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
     # Default results for cases where processing isn't feasible
     nan_results = {
         "GU_PV": np.nan, "LU_PV": np.nan, "GU_SNR": np.nan, "LU_SNR": np.nan,
-        "MeanPV_central": np.nan, "MeanSD_central": np.nan,
-        "central_roi_coords": None, "num_moving_rois": 0, "moving_roi_grid_shape": (0,0)
+        "MeanPV_central": np.nan, "MeanSD_central": np.nan, "MeanSNR_central": np.nan,
+        "central_roi_coords": None, "num_moving_rois": 0, "moving_roi_grid_shape": (0,0),
+        "moving_roi_pvs": np.array([]).reshape(0,0), 
+        "moving_roi_sds": np.array([]).reshape(0,0)
     }
 
     if new_H < 1 or new_W < 1:
@@ -88,6 +95,7 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
     # --- 2. Calculate MeanPV and MeanSD for the central ROI ---
     MeanPV_central = np.mean(central_roi_data)
     MeanSD_central = np.std(central_roi_data)
+    MeanSNR_central = MeanPV_central / MeanSD_central
 
     # --- 3. Define moving ROI parameters (30mm x 30mm, step 15mm) ---
     roi_size_mm = 30.0
@@ -104,8 +112,10 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
 
     base_results = {
         "MeanPV_central": MeanPV_central, "MeanSD_central": MeanSD_central,
+        "MeanSNR_central": MeanSNR_central,
         "central_roi_coords": central_roi_coords, "num_moving_rois": 0,
-        "moving_roi_grid_shape": (0,0)
+        "moving_roi_grid_shape": (0,0),
+        "moving_roi_pvs": np.array([]).reshape(0,0), "moving_roi_sds": np.array([]).reshape(0,0)
     }
 
     if roi_h_px < 1 or roi_w_px < 1:
@@ -130,16 +140,21 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
         return {**nan_results, **base_results, "GU_PV": 0.0, "GU_SNR": 0.0}
 
     # Store PV_i and SD_i for each moving ROI in grids
-    pv_grid = np.full((num_rois_y, num_rois_x), np.nan)
-    sd_grid = np.full((num_rois_y, num_rois_x), np.nan)
+    pv_grid = np.full((num_rois_y, num_rois_x), np.nan, dtype=float)
+    sd_grid = np.full((num_rois_y, num_rois_x), np.nan, dtype=float)
+    snr_grid = np.full((num_rois_y, num_rois_x), np.nan, dtype=float)
 
     for r_idx, y in enumerate(y_coords):
         for c_idx, x in enumerate(x_coords):
             moving_roi = central_roi_data[y : y + roi_h_px, x : x + roi_w_px]
             if moving_roi.size == 0: continue # Should not happen due to prior checks
             
-            pv_grid[r_idx, c_idx] = np.mean(moving_roi)
-            sd_grid[r_idx, c_idx] = np.std(moving_roi)
+            local_pv = np.mean(moving_roi)
+            local_sd = np.std(moving_roi)
+            
+            pv_grid[r_idx, c_idx] = local_pv
+            sd_grid[r_idx, c_idx] = local_sd
+            snr_grid[r_idx, c_idx] = local_pv / local_sd
 
     # --- 5. Calculate uniformity metrics ---
     gu_pv_terms = []
@@ -150,19 +165,19 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
     for r_idx in range(num_rois_y):
         for c_idx in range(num_rois_x):
             pv_i = pv_grid[r_idx, c_idx]
-            sd_i = sd_grid[r_idx, c_idx]
+            snr_i = snr_grid[r_idx, c_idx] # Use calculated SNR_i
 
-            if np.isnan(pv_i) or np.isnan(sd_i):
+            if np.isnan(pv_i) or np.isnan(snr_i): # Check pv_i and snr_i
                 continue # Should not occur if grids populated correctly
 
             # Global Uniformity terms
             gu_pv_terms.append(_calculate_uniformity_term(pv_i, MeanPV_central))
-            gu_snr_terms.append(_calculate_uniformity_term(sd_i, MeanSD_central))
+            gu_snr_terms.append(_calculate_uniformity_term(snr_i, MeanSNR_central))
 
             # Local Uniformity terms (only for ROIs with 8 valid neighbors)
             if 0 < r_idx < num_rois_y - 1 and 0 < c_idx < num_rois_x - 1:
                 neighbor_pvs = []
-                neighbor_sds = []
+                neighbor_snrs = []
                 valid_neighbors = True
                 for dr_neighbor in [-1, 0, 1]:
                     for dc_neighbor in [-1, 0, 1]:
@@ -171,11 +186,11 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
                         
                         nr, nc = r_idx + dr_neighbor, c_idx + dc_neighbor
                         
-                        if np.isnan(pv_grid[nr, nc]) or np.isnan(sd_grid[nr, nc]):
+                        if np.isnan(pv_grid[nr, nc]) or np.isnan(snr_grid[nr, nc]):
                             valid_neighbors = False # A neighbor has NaN data
                             break
                         neighbor_pvs.append(pv_grid[nr, nc])
-                        neighbor_sds.append(sd_grid[nr, nc])
+                        neighbor_snrs.append(snr_grid[nr, nc])
                     if not valid_neighbors:
                         break
                 
@@ -183,16 +198,15 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
                     pv_8n = np.mean(neighbor_pvs)
                     lu_pv_terms.append(_calculate_uniformity_term(pv_i, pv_8n))
 
-                    sd_8n = np.mean(neighbor_sds) # Mean of neighbor SDs
-                    lu_snr_terms.append(_calculate_uniformity_term(sd_i, sd_8n))
+                    snr_8n = np.mean(neighbor_snrs) # Mean of neighbor SNRs
+                    lu_snr_terms.append(_calculate_uniformity_term(snr_i, snr_8n))
     
     # Final metrics: Max of the calculated terms.
-    # If a list of terms is empty (e.g., no ROIs for LU), result is np.nan.
-    # If all terms are 0, result is 0. If np.inf is present, it becomes the max.
-    GU_PV = np.max(gu_pv_terms)*100 if gu_pv_terms else np.nan
-    LU_PV = np.max(lu_pv_terms)*100 if lu_pv_terms else np.nan
-    GU_SNR = np.max(gu_snr_terms)*100 if gu_snr_terms else np.nan
-    LU_SNR = np.max(lu_snr_terms)*100 if lu_snr_terms else np.nan
+    # Using np.nanmax to ignore NaNs if any slip through, though robust _calculate_uniformity_term aims to prevent them.
+    GU_PV = np.nanmax(gu_pv_terms) * 100 if gu_pv_terms else np.nan
+    LU_PV = np.nanmax(lu_pv_terms) * 100 if lu_pv_terms else np.nan
+    GU_SNR = np.nanmax(gu_snr_terms) * 100 if gu_snr_terms else np.nan
+    LU_SNR = np.nanmax(lu_snr_terms) * 100 if lu_snr_terms else np.nan
     
     return {
         "GU_PV": GU_PV,
@@ -201,6 +215,7 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
         "LU_SNR": LU_SNR,
         "MeanPV_central": abs(MeanPV_central),
         "MeanSD_central": MeanSD_central,
+        "MeanSNR_central": abs(MeanSNR_central),
         "central_roi_coords": central_roi_coords,
         "num_moving_rois": num_rois_y * num_rois_x,
         "moving_roi_grid_shape": (num_rois_y, num_rois_x)

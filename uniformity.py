@@ -221,85 +221,30 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
         "moving_roi_grid_shape": (num_rois_y, num_rois_x)
     }
 
-def run_streamlit_app():
+def display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col):
     """
     Runs the Streamlit application for X-ray Uniformity Analysis.
     """
-    st.set_page_config(layout="wide") # Use wide layout for better image display
 
-    st.title("X-ray Image Uniformity Analysis")
+    # This function is now called by the main app (exe_analyzer.py)
+    # It assumes image_array, pixel_spacing_row, and pixel_spacing_col are already available.
 
+    st.subheader("Uniformity Analysis")
     st.write("""
-    Upload a DICOM X-ray image to calculate uniformity metrics
-    (Global/Local Pixel Value Uniformity, Global/Local SNR Uniformity)
+    Calculates uniformity metrics (Global/Local Pixel Value Uniformity, Global/Local SNR Uniformity)
     within a central 80% area ROI using a sliding 30mm x 30mm window.
     """)
 
-    uploaded_file = st.file_uploader("Choose a DICOM file", type=["dcm", "dicom"])
-
-    if uploaded_file is not None:
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".dcm") as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                tmp_file_path = tmp_file.name
-            
-            st.info(f"Processing file: {uploaded_file.name}")
-            
-            dicom_dataset = pydicom.dcmread(tmp_file_path)
-            
-            image_array = dicom_dataset.pixel_array if 'PixelData' in dicom_dataset else None
-            
-            pixel_spacing_row, pixel_spacing_col = None, None
-            if 'PixelSpacing' in dicom_dataset:
-                pixel_spacing = dicom_dataset.PixelSpacing
-                if len(pixel_spacing) == 2:
-                    pixel_spacing_row = float(pixel_spacing[0])
-                    pixel_spacing_col = float(pixel_spacing[1])
-                    st.write(f"Detected Pixel Spacing: {pixel_spacing_row:.2f} mm (row) x {pixel_spacing_col:.2f} mm (col)")
-                else:
-                    st.warning(f"Pixel Spacing tag (0028,0030) has unexpected format: {pixel_spacing}.")
-            else:
-                st.warning("Pixel Spacing tag (0028,0030) not found. Cannot perform mm-based calculations.")
-
-        except Exception as e:
-            st.error(f"Error reading DICOM file: {e}")
-            image_array = None
-            pixel_spacing_row, pixel_spacing_col = None, None
-        finally:
-            if 'tmp_file_path' in locals() and os.path.exists(tmp_file_path):
-                os.remove(tmp_file_path)
-
-        if image_array is not None:
-            st.subheader("Original Image")
-            display_array = image_array.astype(np.float32)
-            if np.max(display_array) > np.min(display_array):
-                display_array = (display_array - np.min(display_array)) / (np.max(display_array) - np.min(display_array)) * 255.0
-            else:
-                display_array = np.zeros_like(display_array)
-            display_array = display_array.astype(np.uint8)
-
-            if len(display_array.shape) == 2:
-                img_pil = Image.fromarray(display_array, mode='L')
-                st.image(img_pil, caption="Original Image (Normalized for Display)", use_container_width=False)
-            else:
-                st.warning(f"Image has unexpected shape {image_array.shape}. Cannot display directly.")
-
-            st.subheader("Uniformity Analysis")
-            if pixel_spacing_row is not None and pixel_spacing_col is not None:
-                if st.button("Run Uniformity Analysis"):
-                    with st.spinner("Calculating uniformity metrics..."):
-                        try:
-                            results = calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spacing_col)
-                            st.success("Analysis Complete!")
-                            st.json(results) # Display results as a JSON object for clarity
-                        except ValueError as ve:
-                            st.error(f"Analysis failed due to invalid input: {ve}")
-                        except Exception as e:
-                            st.error(f"An unexpected error occurred during analysis: {e}")
-            else:
-                st.warning("Pixel spacing is required. Upload a DICOM with Pixel Spacing tag (0028,0030).")
-        else:
-            st.error("Could not load image data.")
-
-if __name__ == '__main__':
-    run_streamlit_app()
+    if pixel_spacing_row is not None and pixel_spacing_col is not None:
+        if st.button("Run Uniformity Analysis"):
+            with st.spinner("Calculating uniformity metrics..."):
+                try:
+                    results = calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spacing_col)
+                    st.success("Uniformity Analysis Complete!")
+                    st.json(results) # Display results as a JSON object for clarity
+                except ValueError as ve:
+                    st.error(f"Uniformity analysis failed due to invalid input: {ve}")
+                except Exception as e:
+                    st.error(f"An unexpected error occurred during uniformity analysis: {e}")
+    else:
+        st.warning("Pixel spacing information is required for Uniformity Analysis. Ensure the DICOM file has the PixelSpacing tag (0028,0030).")

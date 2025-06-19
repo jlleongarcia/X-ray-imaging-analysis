@@ -55,15 +55,25 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, **k
         idx_fx = np.argmin(np.abs(fx_axis - target_fx))
         idx_fy = np.argmin(np.abs(fy_axis - target_fy))
 
+        # Get the actual frequency values at these indices
+        actual_fx_value = fx_axis[idx_fx]
+        actual_fy_value = fy_axis[idx_fy]
+
         # Get the NNPS value at these (closest) frequencies
         # nnps_2d is already fftshifted as it's derived from nps_2d_result from pylinac
         nnps_at_target_freq = nnps_2d[idx_fy, idx_fx]
 
         return {
-            "NNNPS (0.5 mm^-1, 2.0 mm^-1)": f"{nnps_at_target_freq:.4e}",
+            "NNPS_at_target_fx_fy": {
+                "target_fx": float(target_fx),
+                "target_fy": float(target_fy),
+                "actual_fx": float(actual_fx_value),
+                "actual_fy": float(actual_fy_value),
+                "value": float(nnps_at_target_freq) if not np.isnan(nnps_at_target_freq) else np.nan
+            },
             # "NPS_2D": nps_2d_result.tolist(), 
             # "NNPS_2D": nnps_2d.tolist(),
-            # "NPS_1D": nps_1d_result.tolist(),
+            "NPS_1D": nps_1d_result.tolist(),
             "Average_Power": float(avg_power_result),
         }
     except Exception as e:
@@ -87,8 +97,8 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                 if "NNPS_at_target_fx_fy" in nps_results_dict:
                     st.subheader("NNPS at Target Frequencies")
                     target_info = nps_results_dict["NNPS_at_target_fx_fy"]
-                    st.write(f"Target (fx, fy): ({target_info['target_fx_mm^-1']:.2f}, {target_info['target_fy_mm^-1']:.2f}) mm⁻¹")
-                    st.write(f"Actual (fx, fy): ({target_info['actual_fx_mm^-1']:.2f}, {target_info['actual_fy_mm^-1']:.2f}) mm⁻¹")
+                    st.write(f"Target (fx, fy): ({target_info['target_fx']:.2f}, {target_info['target_fy']:.2f}) mm⁻¹")
+                    st.write(f"Actual (fx, fy): ({target_info['actual_fx']:.2f}, {target_info['actual_fy']:.2f}) mm⁻¹")
                     st.write(f"NNPS Value: {target_info['value']:.4e}")
             
             st.json(nps_results_dict) # Display all results as JSON for inspection

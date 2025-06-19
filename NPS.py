@@ -20,21 +20,51 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, **k
     # Example usage of pylinac functions (adjust parameters as needed)
     # Note: I'm assuming pixel_spacing is a single value for both dimensions for simplicity.
     # If they're different, you might need to adjust how you pass them.
-    pixel_spacing = (pixel_spacing_row + pixel_spacing_col) / 2 # Average spacing as an example
+    pixel_spacing = (pixel_spacing_row + pixel_spacing_col) / 2 # Average spacing
+
+    # The noise_power_spectrum_2d function expects an iterable of ROIs.
+    # If the whole image_array is considered as one ROI:
+    rois_list = [image_array]
 
     try:
-        nps_2d = noise_power_spectrum_2d(image_array, pixel_size=pixel_spacing)
-        nps_1d = noise_power_spectrum_1d(image_array, pixel_size=pixel_spacing)
-        avg_power = average_power(image_array)
-        #   NNPS(fx, fy) = NPS(fx, fy) / (Δx * Δy * Nx * Ny)
-        #   Δx and Δy are pixel sizes in mm,
-        #   Nx and Ny are the number of pixels in x and y directions,
+        nps_2d_result = noise_power_spectrum_2d(pixel_size=pixel_spacing, rois=rois_list)
+        
+        # Definition of NNPS:
+        # NNPS(fx, fy) = NPS(fx, fy) / (pixel_spacing_col * pixel_spacing_row * image_array.shape[1] * image_array.shape[0])
+        N_rows, N_cols = image_array.shape
+        nnps_normalization_factor = (pixel_spacing_row * pixel_spacing_col * N_rows * N_cols)
+        
+        if nnps_normalization_factor == 0:
+            st.error("Normalization factor for NNPS is zero. Check pixel spacings and image dimensions.")
+            nnps_2d = np.full_like(nps_2d_result, np.nan)
+        else:
+            nnps_2d = nps_2d_result / nnps_normalization_factor
+
+        nps_1d_result = noise_power_spectrum_1d(spectrum_2d=nps_2d_result)
+        avg_power_result = average_power(nps1d=nps_1d_result)
+
+        # Calculate NNPS at specific frequencies (0.5 mm^-1, 2.0 mm^-1)
+        # Spatial frequency axes
+        fy_axis = np.fft.fftshift(np.fft.fftfreq(N_rows, d=pixel_spacing_row))
+        fx_axis = np.fft.fftshift(np.fft.fftfreq(N_cols, d=pixel_spacing_col))
+
+        target_fx = 0.5  # mm^-1
+        target_fy = 2.0  # mm^-1
+
+        # Find the indices of the closest frequencies
+        idx_fx = np.argmin(np.abs(fx_axis - target_fx))
+        idx_fy = np.argmin(np.abs(fy_axis - target_fy))
+
+        # Get the NNPS value at these (closest) frequencies
+        # nnps_2d is already fftshifted as it's derived from nps_2d_result from pylinac
+        nnps_at_target_freq = nnps_2d[idx_fy, idx_fx]
 
         return {
-            "NPS_2D": nps_2d.tolist(), # Convert to list for JSON serialization
-            "NPS_1D": nps_1d.tolist(),
-            "Average_Power": float(avg_power),  # Ensure float for JSON
-            "NPS_Status": "Calculated from pylinac"
+            "NNNPS (0.5 mm^-1, 2.0 mm^-1)": f"{nnps_at_target_freq:.4e}",
+            # "NPS_2D": nps_2d_result.tolist(), 
+            # "NNPS_2D": nnps_2d.tolist(),
+            # "NPS_1D": nps_1d_result.tolist(),
+            "Average_Power": float(avg_power_result),
         }
     except Exception as e:
         st.error(f"Error during NPS calculation: {e}")
@@ -45,12 +75,20 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     # Add any specific input widgets for NPS if needed (e.g., ROI size for NPS)
     if st.button("Run NPS Analysis"):
         with st.spinner("Calculating NPS..."):
-            nps_results = calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col)
+            nps_results_dict = calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col)
             st.success("NPS Analysis Complete!")
             
-            if nps_results and "NPS_1D" in nps_results and nps_results["NPS_Status"] == "Calculated from pylinac":
+            if nps_results_dict:
                 st.subheader("1D Noise Power Spectrum")
                 # Ensure NPS_1D is suitable for st.line_chart (e.g., a list or 1D numpy array)
-                st.line_chart(nps_results["NPS_1D"])
+                st.line_chart(nps_results_dict["NPS_1D"])
+                
+                # Display the NNPS at target frequency if available
+                if "NNPS_at_target_fx_fy" in nps_results_dict:
+                    st.subheader("NNPS at Target Frequencies")
+                    target_info = nps_results_dict["NNPS_at_target_fx_fy"]
+                    st.write(f"Target (fx, fy): ({target_info['target_fx_mm^-1']:.2f}, {target_info['target_fy_mm^-1']:.2f}) mm⁻¹")
+                    st.write(f"Actual (fx, fy): ({target_info['actual_fx_mm^-1']:.2f}, {target_info['actual_fy_mm^-1']:.2f}) mm⁻¹")
+                    st.write(f"NNPS Value: {target_info['value']:.4e}")
             
-            st.json(nps_results) # Display all results as JSON for inspection
+            st.json(nps_results_dict) # Display all results as JSON for inspection

@@ -9,7 +9,8 @@ import tempfile
 
 # Import functions from your analysis modules
 from uniformity import display_uniformity_analysis_section
-from NPS import display_nps_analysis_section # Assuming NPS.py exists with this function
+from NPS import display_nps_analysis_section
+from MTF import display_mtf_analysis_section
 
 def install_packages():
     """Install packages from requirements.txt."""
@@ -90,13 +91,15 @@ def main_app_ui():
         st.sidebar.markdown("---")
         analysis_type = st.sidebar.selectbox(
             "Choose Analysis Type:",
-            ("Select an analysis...", "Uniformity Analysis", "NPS Analysis")
+            ("Select an analysis...", "Uniformity Analysis", "NPS Analysis", "MTF Analysis")
         )
 
         if analysis_type == "Uniformity Analysis":
             display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
         elif analysis_type == "NPS Analysis":
             display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
+        elif analysis_type == "MTF Analysis":
+            display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
         
     elif uploaded_file is None:
         st.info("Please upload a DICOM file using the sidebar to begin analysis.")

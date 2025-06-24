@@ -240,8 +240,17 @@ def display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_sp
             with st.spinner("Calculating uniformity metrics..."):
                 try:
                     results = calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spacing_col)
-                    st.success("Uniformity Analysis Complete!")
-                    st.json(results) # Display results as a JSON object for clarity
+                    st.success("Uniformity Analysis Complete!") # Display results as a JSON object for clarity
+                    
+                    st.subheader("Calculated Uniformity Metrics")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Global Uniformity (PV)", f"{results['GU_PV']:.2f}%")
+                        st.metric("Local Uniformity (PV)", f"{results['LU_PV']:.2f}%")
+                    with col2:
+                        st.metric("Global Uniformity (SNR)", f"{results['GU_SNR']:.2f}%")
+                        st.metric("Local Uniformity (SNR)", f"{results['LU_SNR']:.2f}%")
+
                 except ValueError as ve:
                     st.error(f"Uniformity analysis failed due to invalid input: {ve}")
                 except Exception as e:

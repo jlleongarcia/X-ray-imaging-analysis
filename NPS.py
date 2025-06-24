@@ -100,5 +100,3 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                     st.write(f"Target (fx, fy): ({target_info['target_fx']:.2f}, {target_info['target_fy']:.2f}) mm⁻¹")
                     st.write(f"Actual (fx, fy): ({target_info['actual_fx']:.2f}, {target_info['actual_fy']:.2f}) mm⁻¹")
                     st.write(f"NNPS Value: {target_info['value']:.4e}")
-            
-            st.json(nps_results_dict) # Display all results as JSON for inspection

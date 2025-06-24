@@ -146,6 +146,5 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                 st.write(f"**MTF50% ({mtf_results_dict.get('x_axis_unit','')}):** {mtf_results_dict.get('MTF50', 'N/A')}")
                 st.write(f"**MTF10% ({mtf_results_dict.get('x_axis_unit','')}):** {mtf_results_dict.get('MTF10', 'N/A')}")
                 
-                st.json(mtf_results_dict) # Display all results for inspection
             else:
                 st.error("MTF calculation did not return expected results.")

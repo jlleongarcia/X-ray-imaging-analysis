@@ -41,6 +41,7 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, **k
             nnps_2d = nps_2d_result / nnps_normalization_factor
 
         nps_1d_result = noise_power_spectrum_1d(spectrum_2d=nps_2d_result)
+        nnps_1d_result = noise_power_spectrum_1d(spectrum_2d=nnps_2d)
         avg_power_result = average_power(nps1d=nps_1d_result)
 
         # Calculate NNPS at specific frequencies (0.5 mm^-1, 2.0 mm^-1)
@@ -73,7 +74,8 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, **k
             },
             # "NPS_2D": nps_2d_result.tolist(), 
             # "NNPS_2D": nnps_2d.tolist(),
-            "NPS_1D": nps_1d_result.tolist(),
+            # "NPS_1D": nps_1d_result.tolist(),
+            "NNPS_1D": nnps_1d_result.tolist(),
             "Average_Power": float(avg_power_result),
         }
     except Exception as e:
@@ -89,14 +91,20 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
             st.success("NPS Analysis Complete!")
             
             if nps_results_dict:
-                st.subheader("1D Noise Power Spectrum")
+                st.subheader("1D Normalized Noise Power Spectrum")
                 # Ensure NPS_1D is suitable for st.line_chart (e.g., a list or 1D numpy array)
-                st.line_chart(nps_results_dict["NPS_1D"])
+                st.line_chart(nps_results_dict["NNPS_1D"])
                 
                 # Display the NNPS at target frequency if available
                 if "NNPS_at_target_fx_fy" in nps_results_dict:
                     st.subheader("NNPS at Target Frequencies")
                     target_info = nps_results_dict["NNPS_at_target_fx_fy"]
-                    st.write(f"Target (fx, fy): ({target_info['target_fx']:.2f}, {target_info['target_fy']:.2f}) mm⁻¹")
-                    st.write(f"Actual (fx, fy): ({target_info['actual_fx']:.2f}, {target_info['actual_fy']:.2f}) mm⁻¹")
-                    st.write(f"NNPS Value: {target_info['value']:.4e}")
+                    st.write(f"Target (fx, fy): ({target_info['target_fx']:.2f} mm⁻¹, {target_info['target_fy']:.2f} mm⁻¹)")
+                    st.write(f"Actual (fx, fy): ({target_info['actual_fx']:.2f} mm⁻¹, {target_info['actual_fy']:.2f} mm⁻¹)")
+                    st.write(f"NNPS ({target_info['actual_fx']:.2f} mm⁻¹, {target_info['actual_fy']:.2f} mm⁻¹) : {target_info['value']:.4e}")
+                
+                # --- Add the checkbox to save data ---
+                st.markdown("---")
+                if st.checkbox("Save NPS data for Threshold Contrast calculation"):
+                    st.session_state['nnps_data'] = nps_results_dict['NNPS_1D_data']
+                    st.success("✅ 1D NNPS data saved for this session!")

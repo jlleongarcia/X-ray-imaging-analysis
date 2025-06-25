@@ -11,6 +11,7 @@ import tempfile
 from uniformity import display_uniformity_analysis_section
 from NPS import display_nps_analysis_section
 from MTF import display_mtf_analysis_section
+from contrast_threshold import display_threshold_contrast_section
 
 def install_packages():
     """Install packages from requirements.txt."""
@@ -26,6 +27,19 @@ def main_app_ui():
     """Defines the main Streamlit UI."""
     st.set_page_config(page_title="X-ray Image Analysis Toolkit", layout="wide")
     st.title("X-ray Image Analysis Toolkit")
+
+    # --- Initialize session state for data sharing ---
+    if 'mtf_data' not in st.session_state:
+        st.session_state['mtf_data'] = None
+    if 'nnps_data' not in st.session_state:
+        st.session_state['nnps_data'] = None
+
+    # Always display session state status in the sidebar for debugging
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Saved Analysis Data Status")
+    st.sidebar.write(f"MTF Data: {'Loaded ✅' if st.session_state['mtf_data'] is not None else 'Missing ⚠️'}")
+    st.sidebar.write(f"NNPS Data: {'Loaded ✅' if st.session_state['nnps_data'] is not None else 'Missing ⚠️'}")
+    st.sidebar.markdown("---")
 
     # --- File Upload and Initial Image Display ---
     uploaded_file = st.sidebar.file_uploader("Choose a DICOM file", type=["dcm", "dicom"])
@@ -155,7 +169,7 @@ def main_app_ui():
         st.sidebar.markdown("---")
         analysis_type = st.sidebar.selectbox(
             "Choose Analysis Type:",
-            ("Select an analysis...", "Uniformity Analysis", "NPS Analysis", "MTF Analysis")
+            ("Select an analysis...", "Uniformity Analysis", "NPS Analysis", "MTF Analysis", "Contrast Analysis")
         )
 
         if analysis_type == "Uniformity Analysis":
@@ -164,6 +178,9 @@ def main_app_ui():
             display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
         elif analysis_type == "MTF Analysis":
             display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
+        elif analysis_type == "Contrast Analysis":
+            display_threshold_contrast_section()
+
         
     elif uploaded_file is None:
         st.info("Please upload a DICOM file using the sidebar to begin analysis.")

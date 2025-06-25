@@ -125,6 +125,10 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     For accurate MTF, a well-defined edge or slit from a phantom image is typically required.
     """)
 
+    # Initialize session state for current NPS results
+    if 'current_mtf_results' not in st.session_state:
+        st.session_state['current_mtf_results'] = None
+
     if st.button("Run MTF Analysis (using central row)"):
         if image_array is None:
             st.error("Please upload an image first.")
@@ -146,11 +150,8 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                 st.write(f"**MTF50% ({mtf_results_dict.get('x_axis_unit','')}):** {mtf_results_dict.get('MTF50', 'N/A')}")
                 st.write(f"**MTF10% ({mtf_results_dict.get('x_axis_unit','')}):** {mtf_results_dict.get('MTF10', 'N/A')}")
 
-                # --- Add the checkbox to save data ---
-                st.markdown("---")
-                if st.checkbox("Save MTF data for Threshold Contrast calculation"):
-                    st.session_state['mtf_data'] = mtf_results_dict['mtf_chart_data']
-                    st.success("✅ MTF data saved for this session!")
+                if st.session_state['current_mtf_results'] is None:
+                    st.session_state['mtf_data'] = mtf_results_dict['mtf_values']
                 
             else:
                 st.error("MTF calculation did not return expected results.")

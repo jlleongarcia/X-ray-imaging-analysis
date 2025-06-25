@@ -84,7 +84,11 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, **k
 
 def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col):
     st.subheader("Noise Power Spectrum (NPS) Analysis")
-    # Add any specific input widgets for NPS if needed (e.g., ROI size for NPS)
+
+    # Initialize session state for current NPS results
+    if 'current_nps_results' not in st.session_state:
+        st.session_state['current_nps_results'] = None
+
     if st.button("Run NPS Analysis"):
         with st.spinner("Calculating NPS..."):
             nps_results_dict = calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col)
@@ -103,8 +107,5 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                     st.write(f"Actual (fx, fy): ({target_info['actual_fx']:.2f} mm⁻¹, {target_info['actual_fy']:.2f} mm⁻¹)")
                     st.write(f"NNPS ({target_info['actual_fx']:.2f} mm⁻¹, {target_info['actual_fy']:.2f} mm⁻¹) : {target_info['value']:.4e}")
                 
-                # --- Add the checkbox to save data ---
-                st.markdown("---")
-                if st.checkbox("Save NPS data for Threshold Contrast calculation"):
-                    st.session_state['nnps_data'] = nps_results_dict['NNPS_1D_data']
-                    st.success("✅ 1D NNPS data saved for this session!")
+                if st.session_state['current_nps_results'] is None:
+                    st.session_state['nnps_data'] = nps_results_dict['NNPS_1D']

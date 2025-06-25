@@ -74,7 +74,7 @@ def display_threshold_contrast_section():
     st.header("Threshold Contrast (C_t) Calculation")
 
     # --- Step 1: Check for necessary data in session_state ---
-    st.markdown("This calculation requires MTF and NNPS data. Please run those analyses first and check the 'Save data' box in each section.")
+    st.markdown("This calculation requires MTF and NNPS data. Please run those analyses first.")
 
     mtf_ready = 'mtf_data' in st.session_state and st.session_state['mtf_data'] is not None
     nnps_ready = 'nnps_data' in st.session_state and st.session_state['nnps_data'] is not None
@@ -91,11 +91,11 @@ def display_threshold_contrast_section():
     st.subheader("Object and System Parameters")
     col1, col2, col3 = st.columns(3)
     with col1:
-        sid = st.number_input("Source-to-Image Distance (SID) in cm", min_value=1.0, value=100.0, step=1.0)
+        sid = st.number_input("Source-to-Image Distance (SID) in cm", min_value=1.0, value=100.0, step=0.1, format="%.1f")
     with col2:
-        sod = st.number_input("Source-to-Object Distance (SOD) in cm", min_value=1.0, value=90.0, step=1.0)
+        sod = st.number_input("Source-to-Object Distance (SOD) in cm", min_value=1.0, value=90.0, step=0.1, format="%.1f")
     with col3:
-        object_radius = st.number_input("Object Radius (R) in mm", min_value=0.01, value=0.5, step=0.1, format="%.2f")
+        object_radius = st.number_input("Object Radius (R) in mm", min_value=0.01, value=0.5, step=0.01, format="%.2f")
 
     nyquist_freq = st.number_input("Nyquist Frequency (cy/mm)", min_value=0.1, value=5.0, help="Typically 1/(2*pixel_spacing)")
 

@@ -13,21 +13,26 @@ from NPS import display_nps_analysis_section
 from MTF import display_mtf_analysis_section
 from contrast_threshold import display_threshold_contrast_section
 
+# --- Streamlit Page Configuration ---
+st.set_page_config(page_title="X-ray Image Analysis Toolkit", layout="wide")
+
+# Use a session state variable to track if packages have been installed
+if 'packages_installed' not in st.session_state:
+    st.session_state['packages_installed'] = False
+
 def install_packages():
     """Install packages from requirements.txt."""
-    print("Checking and installing required packages...")
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
-        print("Packages installed successfully.")
-    except subprocess.CalledProcessError as e:
-        print(f"Error installing packages: {e}")
-        sys.exit(1)
+    if not st.session_state['packages_installed']:
+        st.info("Checking and installing required packages (this may take a moment)...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
+            st.success("Required packages installed successfully!")
+            st.session_state['packages_installed'] = True
+        except subprocess.CalledProcessError as e:
+            st.error(f"Error installing packages: {e}. Please check your internet connection or requirements.txt file.")
+            st.stop() # Stop the app if packages cannot be installed
 
 def main_app_ui():
-    """Defines the main Streamlit UI."""
-    st.set_page_config(page_title="X-ray Image Analysis Toolkit", layout="wide")
-    st.title("X-ray Image Analysis Toolkit")
-
     # --- Initialize session state for data sharing ---
     if 'mtf_data' not in st.session_state:
         st.session_state['mtf_data'] = None
@@ -42,7 +47,9 @@ def main_app_ui():
     st.sidebar.markdown("---")
 
     # --- File Upload and Initial Image Display ---
-    uploaded_file = st.sidebar.file_uploader("Choose a DICOM file", type=["dcm", "dicom"])
+    # Use a key for the file uploader to manage its state explicitly
+    # Let st.file_uploader manage its own state.
+    uploaded_file_widget = st.sidebar.file_uploader("Choose a DICOM file", type=["dcm", "dicom"])
 
     image_array = None
     pixel_spacing_row = None
@@ -50,14 +57,12 @@ def main_app_ui():
     dicom_filename = None
     dicom_dataset = None # Store the full dataset
 
-    if uploaded_file is not None:
-        dicom_filename = uploaded_file.name
+    if uploaded_file_widget is not None:
+        dicom_filename = uploaded_file_widget.name
         try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".dcm") as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                tmp_file_path = tmp_file.name
-            
-            dicom_dataset = pydicom.dcmread(tmp_file_path)
+            # Streamlit's file_uploader provides a BytesIO object, so we can read directly
+            # No need for tempfile if pydicom can read from BytesIO
+            dicom_dataset = pydicom.dcmread(uploaded_file_widget)
             
             if 'PixelData' in dicom_dataset:
                 image_array = dicom_dataset.pixel_array
@@ -80,9 +85,6 @@ def main_app_ui():
             st.error(f"Error reading DICOM file: {e}")
             image_array = None # Ensure it's reset on error
             dicom_dataset = None # Reset dataset on error
-        finally:
-            if 'tmp_file_path' in locals() and os.path.exists(tmp_file_path):
-                os.remove(tmp_file_path)
 
     # --- Main Area ---
     if image_array is not None and dicom_dataset is not None:
@@ -181,17 +183,22 @@ def main_app_ui():
         elif analysis_type == "Contrast Analysis":
             display_threshold_contrast_section()
 
-        
-    elif uploaded_file is None:
+    elif uploaded_file_widget is None:
         st.info("Please upload a DICOM file using the sidebar to begin analysis.")
+
+    # --- Add a clear session state button for debugging ---
+    st.sidebar.markdown("---")
+    if st.sidebar.button("Clear All Saved Analysis Data"):
+        st.session_state['mtf_data'] = None
+        st.session_state['nnps_data'] = None
+        st.success("All saved analysis data cleared!")
+        st.rerun() # Rerun to reflect the cleared state
 
 
 if __name__ == "__main__":
-    print("Starting setup script...")
 
     # Install dependencies
     install_packages()
     
     # Run the main Streamlit UI
-    print("Starting the Streamlit app UI from exe_analyzer.py...")
     main_app_ui()

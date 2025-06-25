@@ -1,6 +1,7 @@
 import streamlit as st
 import numpy as np
-from pylinac.core.nps import noise_power_spectrum_2d, noise_power_spectrum_1d, average_power # Import from your pylinac
+from pylinac.core.nps import noise_power_spectrum_2d, noise_power_spectrum_1d, average_power
+import pandas as pd
 
 def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, **kwargs):
     """
@@ -64,6 +65,20 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, **k
         # nnps_2d is already fftshifted as it's derived from nps_2d_result from pylinac
         nnps_at_target_freq = nnps_2d[idx_fy, idx_fx]
 
+        # Calculate frequencies for 1D NNPS plot
+        # The 1D NPS is a radial average. The frequency axis goes from 0 to Nyquist.
+        # Nyquist frequency is 0.5 / pixel_spacing.
+        # Use the maximum Nyquist frequency from both dimensions for the x-axis range.
+        nyquist_freq_row = 0.5 / pixel_spacing_row
+        nyquist_freq_col = 0.5 / pixel_spacing_col
+        max_nyquist_freq = max(nyquist_freq_row, nyquist_freq_col)
+
+        # Generate frequencies for the 1D NNPS plot
+        # The number of points in the frequency axis should match the length of nnps_1d_result
+        frequencies_nps = np.linspace(0, max_nyquist_freq, len(nnps_1d_result))
+        nnps_data_for_chart = np.array([frequencies_nps, nnps_1d_result]).T
+        x_axis_unit_nps = "lp/mm" # Assuming lp/mm as the standard unit for spatial frequency
+
         return {
             "NNPS_at_target_fx_fy": {
                 "target_fx": float(target_fx),
@@ -72,10 +87,9 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, **k
                 "actual_fy": float(actual_fy_value),
                 "value": float(nnps_at_target_freq) if not np.isnan(nnps_at_target_freq) else np.nan
             },
-            # "NPS_2D": nps_2d_result.tolist(), 
-            # "NNPS_2D": nnps_2d.tolist(),
-            # "NPS_1D": nps_1d_result.tolist(),
-            "NNPS_1D": nnps_1d_result.tolist(),
+            "NNPS_1D_values": nnps_1d_result.tolist(), # Keep original for potential other uses
+            "NNPS_1D_chart_data": nnps_data_for_chart, # New data for plotting
+            "x_axis_unit_nps": x_axis_unit_nps,
             "Average_Power": float(avg_power_result),
         }
     except Exception as e:
@@ -96,8 +110,11 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
             
             if nps_results_dict:
                 st.subheader("1D Normalized Noise Power Spectrum")
-                # Ensure NPS_1D is suitable for st.line_chart (e.g., a list or 1D numpy array)
-                st.line_chart(nps_results_dict["NNPS_1D"])
+                
+                nnps_chart_data = nps_results_dict["NNPS_1D_chart_data"]
+                x_axis_unit_nps = nps_results_dict["x_axis_unit_nps"]
+                df_nnps = pd.DataFrame(nnps_chart_data, columns=[x_axis_unit_nps, 'NNPS'])
+                st.line_chart(df_nnps.set_index(x_axis_unit_nps))
                 
                 # Display the NNPS at target frequency if available
                 if "NNPS_at_target_fx_fy" in nps_results_dict:
@@ -106,6 +123,5 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                     st.write(f"Target (fx, fy): ({target_info['target_fx']:.2f} mm⁻¹, {target_info['target_fy']:.2f} mm⁻¹)")
                     st.write(f"Actual (fx, fy): ({target_info['actual_fx']:.2f} mm⁻¹, {target_info['actual_fy']:.2f} mm⁻¹)")
                     st.write(f"NNPS ({target_info['actual_fx']:.2f} mm⁻¹, {target_info['actual_fy']:.2f} mm⁻¹) : {target_info['value']:.4e}")
-                
-                if st.session_state['current_nps_results'] is None:
-                    st.session_state['nnps_data'] = nps_results_dict['NNPS_1D']
+
+                st.session_state['nnps_data'] = nnps_chart_data

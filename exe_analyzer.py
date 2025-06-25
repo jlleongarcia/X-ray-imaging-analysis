@@ -11,7 +11,7 @@ import tempfile
 from uniformity import display_uniformity_analysis_section
 from NPS import display_nps_analysis_section
 from MTF import display_mtf_analysis_section
-from contrast_threshold import display_threshold_contrast_section
+from threshold_contrast import display_threshold_contrast_section
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(page_title="X-ray Image Analysis Toolkit", layout="wide")
@@ -181,7 +181,7 @@ def main_app_ui():
         elif analysis_type == "MTF Analysis":
             display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
         elif analysis_type == "Contrast Analysis":
-            display_threshold_contrast_section()
+            display_threshold_contrast_section(pixel_spacing_row, pixel_spacing_col)
 
     elif uploaded_file_widget is None:
         st.info("Please upload a DICOM file using the sidebar to begin analysis.")

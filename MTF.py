@@ -151,7 +151,7 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                 st.write(f"**MTF10% ({mtf_results_dict.get('x_axis_unit','')}):** {mtf_results_dict.get('MTF10', 'N/A')}")
 
                 if st.session_state['current_mtf_results'] is None:
-                    st.session_state['mtf_data'] = mtf_results_dict['mtf_values']
+                    st.session_state['mtf_data'] = mtf_results_dict['mtf_chart_data']
                 
             else:
                 st.error("MTF calculation did not return expected results.")

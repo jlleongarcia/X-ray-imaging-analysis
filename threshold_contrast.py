@@ -57,8 +57,8 @@ def calculate_threshold_contrast_advanced(
 
     # 3. Perform numerical integrations (denominator integral uses max frequency from MTF data)
     max_freq = np.max(mtf_data[:, 0])
-    numerator_integral, _ = quad(numerator_integrand, 0, nyquist_freq, limit=100)
-    denominator_integral, _ = quad(denominator_integrand, 0, max_freq, limit=100) # Reverted to max_freq
+    numerator_integral, _ = quad(numerator_integrand, 0, nyquist_freq)
+    denominator_integral, _ = quad(denominator_integrand, 0, max_freq)
 
     if denominator_integral == 0:
         return float('inf')
@@ -69,9 +69,9 @@ def calculate_threshold_contrast_advanced(
 
 # --- Streamlit Display Function ---
 
-def display_threshold_contrast_section():
+def display_threshold_contrast_section(pixel_spacing_row, pixel_spacing_col):
     """Renders the Threshold Contrast section in the Streamlit app."""
-    st.header("Threshold Contrast (C_t) Calculation")
+    st.header("Threshold Contrast Calculation")
 
     # --- Step 1: Check for necessary data in session_state ---
     st.markdown("This calculation requires MTF and NNPS data. Please run those analyses first.")
@@ -96,14 +96,15 @@ def display_threshold_contrast_section():
         sod = st.number_input("Source-to-Object Distance (SOD) in cm", min_value=1.0, value=90.0, step=0.1, format="%.1f")
     with col3:
         object_radius = st.number_input("Object Radius (R) in mm", min_value=0.01, value=0.5, step=0.01, format="%.2f")
-
-    nyquist_freq = st.number_input("Nyquist Frequency (cy/mm)", min_value=0.1, value=5.0, help="Typically 1/(2*pixel_spacing)")
+    
+    pixel_spacing = (pixel_spacing_row + pixel_spacing_col) / 2 # Average spacing
+    nyquist_freq = 0.5 / pixel_spacing
 
     # Display the Nyquist frequency and max MTF frequency as outputs
     st.subheader("Key Frequencies for Calculation")
-    st.metric("Nyquist Frequency (f_n)", f"{nyquist_freq:.2f} cy/mm")
+    st.metric("Nyquist Frequency", f"{nyquist_freq:.2f} lp/mm")
     if mtf_ready:
-        st.metric("Max MTF Frequency (f_max)", f"{np.max(st.session_state['mtf_data'][:, 0]):.2f} cy/mm")
+        st.metric("Max MTF Frequency", f"{np.max(st.session_state['mtf_data'][:, 0]):.2f} lp/mm")
 
     # --- Step 3: Run calculation ---
     if st.button("Calculate Threshold Contrast", disabled=not (mtf_ready and nnps_ready)):

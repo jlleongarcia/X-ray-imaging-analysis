@@ -73,7 +73,7 @@ def calculate_mtf_metrics(image_array, pixel_spacing_col):
         # 1. Compute FFT of the LSF
         lsf_fft = np.fft.fft(profile_values)
 
-        # 2. Compute MTF (magnitude of FFT, positive frequencies only)
+        # 2. Compute MTF (magnitude of LSF, positive frequencies only)
         mtf_raw = np.abs(lsf_fft[:N//2])
 
         # 3. Normalize MTF

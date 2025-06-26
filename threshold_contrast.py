@@ -33,7 +33,7 @@ def calculate_threshold_contrast_advanced(
     magnification: float,
     mtf_data: np.ndarray,
     nnps_data: np.ndarray,
-    nyquist_freq: float, # This is f_n, the upper limit for the numerator integral
+    nyquist_freq: float,
     snr_t: float = 3.0
 ) -> float:
     """Calculates threshold contrast using a comprehensive imaging model."""
@@ -57,8 +57,8 @@ def calculate_threshold_contrast_advanced(
 
     # 3. Perform numerical integrations (denominator integral uses max frequency from MTF data)
     max_freq = np.max(mtf_data[:, 0])
-    numerator_integral, _ = quad(numerator_integrand, 0, nyquist_freq)
-    denominator_integral, _ = quad(denominator_integrand, 0, max_freq)
+    numerator_integral, _ = quad(numerator_integrand, 0, nyquist_freq, limit=10000)
+    denominator_integral, _ = quad(denominator_integrand, 0, max_freq, limit=10000)
 
     if denominator_integral == 0:
         return float('inf')

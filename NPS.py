@@ -36,7 +36,11 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, **k
     rois_list = [image_array]
 
     try:
-        nps_2d_result = noise_power_spectrum_2d(pixel_size=pixel_spacing_avg, rois=rois_list)
+        # Edge effects arising from taking the Fourier transform of an image of finite dimensions need to be considered,
+        # as these will lead to a large peak at ω = 0. To avoid this, a difference image, calculated from two images recorded 
+        # under the identical conditions, is taken to calculate NPS. 
+        # Such a difference image will have a mean of zero, negating edge effects, and thus the resulting NPS only needs to be halved to compensate.
+        nps_2d_result = noise_power_spectrum_2d(pixel_size=pixel_spacing_avg, rois=rois_list) / 2
         
         # NNPS definition: NNPS(fx, fy) = NPS(fx, fy) / NPS(0)
         # NPS(0) is the value at the center of the 2D NPS array.
@@ -112,7 +116,6 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     if st.button("Run NPS Analysis"):
         with st.spinner("Calculating NPS..."):
             nps_results_dict = calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col)
-            st.success("NPS Analysis Complete!")
             
             if "NPS_Status" in nps_results_dict and "Error" in nps_results_dict["NPS_Status"]:
                 st.error(f"NPS Calculation Failed: {nps_results_dict['NPS_Status']}")

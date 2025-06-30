@@ -107,10 +107,8 @@ def main_app_ui():
         pixel_intensity_relationship = getattr(dicom_dataset, 'PixelIntensityRelationship', 'UNKNOWN')
         st.write(f"**Pixel Intensity Relationship (0028,1040):** {pixel_intensity_relationship}")
 
-        is_difference_image = "Difference of" in (dicom_filename or "")
-
         # Option to revert to stored pixel values
-        if not is_difference_image and (rescale_slope != 1.0 or rescale_intercept != 0.0):
+        if rescale_slope != 1.0 or rescale_intercept != 0.0:
             st.markdown("---")
             st.subheader("Raw Data Options")
             revert_to_stored_pixels = st.checkbox(
@@ -131,8 +129,6 @@ def main_app_ui():
                     st.info("Image pixel values reverted to stored values (undoing Rescale transformation) despite non-linear intensity relationship.")
             else:
                 st.info("Image pixel values are in physical units (e.g., Hounsfield Units for CT) as provided by pydicom's default processing of Rescale Slope/Intercept.")
-        elif is_difference_image:
-            st.info("Displaying a difference image created from stored pixel values. Rescale options are not applicable.")
         else:
             st.info("No Rescale Slope or Intercept applied to this image, or values are default (1.0, 0.0). Image values are already in their 'raw' form as stored.")
 
@@ -161,7 +157,7 @@ def main_app_ui():
 
         if len(display_array.shape) == 2:
             img_pil = Image.fromarray(display_array, mode='L')
-            st.image(img_pil, caption="Original Image (Normalized for Display)" if not is_difference_image else "Difference Image (Normalized for Display)", use_container_width=True)
+            st.image(img_pil, caption="Original Image (Normalized for Display)", use_container_width=True)
         else:
             st.warning(f"Image has unexpected shape {image_array.shape}. Cannot display directly.")
         

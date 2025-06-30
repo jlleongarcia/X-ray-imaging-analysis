@@ -36,11 +36,12 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, **k
     rois_list = [image_array]
 
     try:
-        # Edge effects arising from taking the Fourier transform of an image of finite dimensions need to be considered,
-        # as these will lead to a large peak at ω = 0. To avoid this, a difference image, calculated from two images recorded 
-        # under the identical conditions, is taken to calculate NPS. 
-        # Such a difference image will have a mean of zero, negating edge effects, and thus the resulting NPS only needs to be halved to compensate.
-        nps_2d_result = noise_power_spectrum_2d(pixel_size=pixel_spacing_avg, rois=rois_list) / 2
+        # The pylinac noise_power_spectrum_2d function calculates the NPS from one or more ROIs.
+        # For a single ROI, it computes the 2D FFT, takes the squared magnitude, and normalizes.
+        # Note: For more accurate NPS, it's standard practice to use a difference image from two
+        # identical exposures to remove structured noise and negate edge effects from the FFT.
+        # Since we are using a single image, the result is not halved.
+        nps_2d_result = noise_power_spectrum_2d(pixel_size=pixel_spacing_avg, rois=rois_list)
         
         # NNPS definition: NNPS(fx, fy) = NPS(fx, fy) / NPS(0)
         # NPS(0) is the value at the center of the 2D NPS array.

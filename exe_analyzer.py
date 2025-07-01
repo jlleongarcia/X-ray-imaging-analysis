@@ -48,7 +48,7 @@ def main_app_ui():
 
     # --- File Upload and Initial Image Display ---
     # Use a key for the file uploader to manage its state explicitly
-    uploaded_file = st.sidebar.file_uploader("Choose a DICOM file", type=["dcm", "dicom"], accept_multiple_files=False)
+    uploaded_files = st.sidebar.file_uploader("Choose DICOM file(s)", type=["dcm", "dicom"], accept_multiple_files=True)
 
     image_array = None
     pixel_spacing_row = None
@@ -56,29 +56,92 @@ def main_app_ui():
     dicom_filename = None
     dicom_dataset = None # Store the full dataset
 
-    if uploaded_file is not None:
-        dicom_filename = uploaded_file.name
-        try:
-            dicom_dataset = pydicom.dcmread(uploaded_file)
-            if 'PixelData' in dicom_dataset:
-                image_array = dicom_dataset.pixel_array
-            else:
-                st.error("DICOM file does not contain pixel data.")
-            
-            if 'PixelSpacing' in dicom_dataset:
-                pixel_spacing = dicom_dataset.PixelSpacing
-                if len(pixel_spacing) == 2:
-                    pixel_spacing_row = float(pixel_spacing[0])
-                    pixel_spacing_col = float(pixel_spacing[1])
+    if uploaded_files:
+        if len(uploaded_files) == 1:
+            uploaded_file_widget = uploaded_files[0]
+            dicom_filename = uploaded_file_widget.name
+            try:
+                dicom_dataset = pydicom.dcmread(uploaded_file_widget)
+                if 'PixelData' in dicom_dataset:
+                    image_array = dicom_dataset.pixel_array
                 else:
-                    st.warning(f"Pixel Spacing tag (0028,0030) has unexpected format: {pixel_spacing}.")
-            else:
-                st.warning("Pixel Spacing tag (0028,0030) not found in DICOM header.")
+                    st.error("DICOM file does not contain pixel data.")
+                
+                if 'PixelSpacing' in dicom_dataset:
+                    pixel_spacing = dicom_dataset.PixelSpacing
+                    if len(pixel_spacing) == 2:
+                        pixel_spacing_row = float(pixel_spacing[0])
+                        pixel_spacing_col = float(pixel_spacing[1])
+                    else:
+                        st.warning(f"Pixel Spacing tag (0028,0030) has unexpected format: {pixel_spacing}.")
+                else:
+                    st.warning("Pixel Spacing tag (0028,0030) not found in DICOM header.")
 
-        except Exception as e:
-            st.error(f"Error reading DICOM file: {e}")
-            image_array = None
-            dicom_dataset = None
+            except Exception as e:
+                st.error(f"Error reading DICOM file: {e}")
+                image_array = None
+                dicom_dataset = None
+
+        elif len(uploaded_files) == 2:
+            st.info("Two DICOM files uploaded. Calculating difference image from stored pixel values for NPS analysis.")
+            img_arrays_stored_values = []
+            pixel_spacings = []
+            filenames = []
+
+            for i, uploaded_file_widget in enumerate(uploaded_files):
+                filenames.append(uploaded_file_widget.name)
+                try:
+                    ds_temp = pydicom.dcmread(uploaded_file_widget, force=True)
+                    if 'PixelData' not in ds_temp:
+                        st.error(f"DICOM file {uploaded_file_widget.name} does not contain pixel data.")
+                        return
+
+                    # Get actual pixel values (pydicom applies rescale by default) and revert to stored values
+                    actual_pixel_array = ds_temp.pixel_array.astype(np.float64)
+                    rescale_slope = getattr(ds_temp, 'RescaleSlope')
+                    rescale_intercept = getattr(ds_temp, 'RescaleIntercept')
+                    
+                    if rescale_slope == 0:
+                        st.error(f"Rescale Slope is zero in {uploaded_file_widget.name}, cannot revert to stored values.")
+                        return
+                    
+                    stored_pixel_array = (actual_pixel_array - rescale_intercept) / rescale_slope
+                    img_arrays_stored_values.append(stored_pixel_array)
+
+                    # Get pixel spacing
+                    if 'PixelSpacing' in ds_temp and len(ds_temp.PixelSpacing) == 2:
+                        ps = ds_temp.PixelSpacing
+                        pixel_spacings.append((float(ps[0]), float(ps[1])))
+                    else:
+                        st.warning(f"Pixel Spacing not found or invalid in {uploaded_file_widget.name}.")
+                        pixel_spacings.append((None, None))
+
+                except Exception as e:
+                    st.error(f"Error reading DICOM file {uploaded_file_widget.name}: {e}")
+                    return
+
+            if len(img_arrays_stored_values) == 2:
+                if img_arrays_stored_values[0].shape != img_arrays_stored_values[1].shape:
+                    st.error(f"Image dimensions mismatch: {filenames[0]} ({img_arrays_stored_values[0].shape}) vs {filenames[1]} ({img_arrays_stored_values[1].shape}). Cannot calculate difference.")
+                    return
+                if pixel_spacings[0] != pixel_spacings[1] and pixel_spacings[0] is not None and pixel_spacings[1] is not None:
+                    st.warning(f"Pixel spacings mismatch: {filenames[0]} ({pixel_spacings[0]}) vs {filenames[1]} ({pixel_spacings[1]}). Using spacing from the first image.")
+
+                # Calculate difference image from stored values
+                image_array = img_arrays_stored_values[0] - img_arrays_stored_values[1]
+                dicom_filename = f"Difference of {filenames[0]} and {filenames[1]}"
+                
+                # Use the first dataset for header info, but the pixel_array is the new difference array
+                dicom_dataset = pydicom.dcmread(uploaded_files[0], force=True)
+                
+                # Use pixel spacing from the first image
+                if pixel_spacings[0][0] is not None:
+                    pixel_spacing_row, pixel_spacing_col = pixel_spacings[0]
+                else:
+                    st.warning("Pixel spacing not available for difference image. NPS will use cycles/pixel.")
+            else:
+                st.warning("Please upload either one or two DICOM files for analysis.")
+                return
 
     # --- Main Area ---
     if image_array is not None and dicom_dataset is not None:
@@ -176,8 +239,8 @@ def main_app_ui():
         elif analysis_type == "Contrast Analysis":
             display_threshold_contrast_section(pixel_spacing_row, pixel_spacing_col)
 
-    elif uploaded_file is None:
-        st.info("Please upload a DICOM file using the sidebar to begin analysis.")
+    elif not uploaded_files:
+        st.info("Please upload one or two DICOM files using the sidebar to begin analysis.")
 
     # --- Add a clear session state button for debugging ---
     st.sidebar.markdown("---")

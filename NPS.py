@@ -3,7 +3,7 @@ import numpy as np
 from pylinac.core.nps import noise_power_spectrum_2d, noise_power_spectrum_1d, average_power
 import pandas as pd
 
-def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, **kwargs):
+def calculate_nps_metrics(image_array, mean_pv, pixel_spacing_row, pixel_spacing_col, **kwargs):
     """
     Calculates NPS metrics from an image array.
 
@@ -42,16 +42,8 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, **k
         # Such a difference image will have a mean of zero, negating edge effects, and thus the resulting NPS only needs to be halved to compensate.
         nps_2d_result = noise_power_spectrum_2d(pixel_size=pixel_spacing_avg, rois=rois_list) / 2
         
-        # NNPS definition: NNPS(fx, fy) = NPS(fx, fy) / NPS(0)
-        # NPS(0) is the value at the center of the 2D NPS array.
-        center_y, center_x = nps_2d_result.shape[0] // 2, nps_2d_result.shape[1] // 2
-        nps_at_zero_freq = nps_2d_result[center_y, center_x]
-        
-        if nps_at_zero_freq == 0:
-            st.warning("NPS at zero frequency is zero. NNPS cannot be normalized.")
-            nnps_2d = np.full_like(nps_2d_result, np.nan)
-        else:
-            nnps_2d = nps_2d_result / nps_at_zero_freq
+        # NNPS definition: NNPS(fx, fy) = NPS(fx, fy) / (Mean Pixel Value of Largest ROI)^2
+        nnps_2d = nps_2d_result / (mean_pv ** 2)
 
         # Calculate 1D NPS and NNPS from their 2D counterparts
         nps_1d_result = noise_power_spectrum_1d(spectrum_2d=nps_2d_result)
@@ -106,7 +98,7 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, **k
         st.error(f"Error during NPS calculation: {e}")
         return {"NPS_Status": f"Error: {e}"}
 
-def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col):
+def display_nps_analysis_section(image_array, mean_pv, pixel_spacing_row, pixel_spacing_col):
     st.subheader("Noise Power Spectrum (NPS) Analysis")
 
     # Initialize session state for current NPS results
@@ -115,7 +107,7 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
 
     if st.button("Run NPS Analysis"):
         with st.spinner("Calculating NPS..."):
-            nps_results_dict = calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col)
+            nps_results_dict = calculate_nps_metrics(image_array, mean_pv, pixel_spacing_row, pixel_spacing_col)
             
             if "NPS_Status" in nps_results_dict and "Error" in nps_results_dict["NPS_Status"]:
                 st.error(f"NPS Calculation Failed: {nps_results_dict['NPS_Status']}")

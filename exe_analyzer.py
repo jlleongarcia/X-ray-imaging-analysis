@@ -55,6 +55,8 @@ def main_app_ui():
     pixel_spacing_col = None
     dicom_filename = None
     dicom_dataset = None # Store the full dataset
+    mean_for_nnps = None # Mean pixel value of the original (linearized) image for NNPS normalization
+    is_difference_image = False # Flag to track if we are analyzing a difference image
 
     if uploaded_files:
         if len(uploaded_files) == 1:
@@ -83,23 +85,27 @@ def main_app_ui():
                 dicom_dataset = None
 
         elif len(uploaded_files) == 2:
-            st.info("Two DICOM files uploaded. Calculating difference image from stored pixel values for NPS analysis.")
+            is_difference_image = True
+            st.info("Two DICOM files uploaded. Each image will be reverted to its raw 'stored values' before subtraction to create the difference image.")
             img_arrays_stored_values = []
             pixel_spacings = []
             filenames = []
+            dicom_dataset = None
 
             for i, uploaded_file_widget in enumerate(uploaded_files):
                 filenames.append(uploaded_file_widget.name)
                 try:
                     ds_temp = pydicom.dcmread(uploaded_file_widget, force=True)
+                    if i == 0:
+                        dicom_dataset = ds_temp  # Store the first dataset object
                     if 'PixelData' not in ds_temp:
                         st.error(f"DICOM file {uploaded_file_widget.name} does not contain pixel data.")
                         return
 
                     # Get actual pixel values (pydicom applies rescale by default) and revert to stored values
                     actual_pixel_array = ds_temp.pixel_array.astype(np.float64)
-                    rescale_slope = getattr(ds_temp, 'RescaleSlope')
-                    rescale_intercept = getattr(ds_temp, 'RescaleIntercept')
+                    rescale_slope = getattr(ds_temp, 'RescaleSlope', 1.0)
+                    rescale_intercept = getattr(ds_temp, 'RescaleIntercept', 0.0)
                     
                     if rescale_slope == 0:
                         st.error(f"Rescale Slope is zero in {uploaded_file_widget.name}, cannot revert to stored values.")
@@ -129,10 +135,8 @@ def main_app_ui():
 
                 # Calculate difference image from stored values
                 image_array = img_arrays_stored_values[0] - img_arrays_stored_values[1]
+                mean_pv = np.mean(image_array) # Use mean of image for Normalized Noise Power Spectrum (NNPS)
                 dicom_filename = f"Difference of {filenames[0]} and {filenames[1]}"
-                
-                # Use the first dataset for header info, but the pixel_array is the new difference array
-                dicom_dataset = pydicom.dcmread(uploaded_files[0], force=True)
                 
                 # Use pixel spacing from the first image
                 if pixel_spacings[0][0] is not None:
@@ -141,7 +145,6 @@ def main_app_ui():
                     st.warning("Pixel spacing not available for difference image. NPS will use cycles/pixel.")
             else:
                 st.warning("Please upload either one or two DICOM files for analysis.")
-                return
 
     # --- Main Area ---
     if image_array is not None and dicom_dataset is not None:
@@ -170,30 +173,32 @@ def main_app_ui():
         pixel_intensity_relationship = getattr(dicom_dataset, 'PixelIntensityRelationship', 'UNKNOWN')
         st.write(f"**Pixel Intensity Relationship (0028,1040):** {pixel_intensity_relationship}")
 
-        # Option to revert to stored pixel values
-        if rescale_slope != 1.0 or rescale_intercept != 0.0:
+        if is_difference_image:
+            st.success("This is a difference image. It was created by reverting each source image to its raw stored values before subtraction. The analysis will be performed on this difference image.")
+        else:
+            # Option to revert to stored pixel values
             st.markdown("---")
             st.subheader("Raw Data Options")
-            revert_to_stored_pixels = st.checkbox(
-                "Revert to Stored Pixel Values (undo Rescale transformation)", value=True,
-                help="If checked, the image pixel values will be converted back to their original stored integer values before Rescale Slope/Intercept were applied. This is useful if you want to analyze the rawest form of the pixel data as stored in the DICOM file."
-            )
-
-            if revert_to_stored_pixels:
-                if pixel_intensity_relationship == 'LIN':
-                    # Apply inverse conversion: Stored_Value = (Actual_Value - RescaleIntercept) / RescaleSlope
-                    # Ensure float division
-                    image_array = (image_array.astype(np.float64) - rescale_intercept) / rescale_slope
-                    st.info("Image pixel values reverted to stored values (undoing Rescale transformation).")
+            if rescale_slope != 1.0 or rescale_intercept != 0.0:
+                revert_to_stored_pixels = st.checkbox(
+                    "Revert to Stored Pixel Values (undo Rescale transformation)", value=True,
+                    help="If checked, the image pixel values will be converted back to their original stored integer values before Rescale Slope/Intercept were applied. This is useful if you want to analyze the rawest form of the pixel data as stored in the DICOM file."
+                )
+                if revert_to_stored_pixels:
+                    if pixel_intensity_relationship == 'LIN':
+                        # Apply inverse conversion: Stored_Value = (Actual_Value - RescaleIntercept) / RescaleSlope
+                        # Ensure float division
+                        image_array = (image_array.astype(np.float64) - rescale_intercept) / rescale_slope
+                        st.info("Image pixel values reverted to stored values (undoing Rescale transformation).")
+                    else:
+                        st.warning(f"Pixel Intensity Relationship is '{pixel_intensity_relationship}', not 'LIN'. Applying inverse Rescale may not fully represent the original stored values if a non-linear relationship was intended.")
+                        # Still apply the linear inverse as requested, but with a warning
+                        image_array = (image_array.astype(np.float64) - rescale_intercept) / rescale_slope
+                        st.info("Image pixel values reverted to stored values (undoing Rescale transformation) despite non-linear intensity relationship.")
                 else:
-                    st.warning(f"Pixel Intensity Relationship is '{pixel_intensity_relationship}', not 'LIN'. Applying inverse Rescale may not fully represent the original stored values if a non-linear relationship was intended.")
-                    # Still apply the linear inverse as requested, but with a warning
-                    image_array = (image_array.astype(np.float64) - rescale_intercept) / rescale_slope
-                    st.info("Image pixel values reverted to stored values (undoing Rescale transformation) despite non-linear intensity relationship.")
+                    st.info("Image pixel values are in physical units (e.g., Hounsfield Units for CT) as provided by pydicom's default processing of Rescale Slope/Intercept.")
             else:
-                st.info("Image pixel values are in physical units (e.g., Hounsfield Units for CT) as provided by pydicom's default processing of Rescale Slope/Intercept.")
-        else:
-            st.info("No Rescale Slope or Intercept applied to this image, or values are default (1.0, 0.0). Image values are already in their 'raw' form as stored.")
+                st.info("No Rescale Slope or Intercept applied to this image, or values are default (1.0, 0.0). Image values are already in their 'raw' form as stored.")
 
         # Display original image
         display_array = image_array.copy() # Work on a copy to avoid modifying the array passed to analysis
@@ -233,7 +238,7 @@ def main_app_ui():
         if analysis_type == "Uniformity Analysis":
             display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
         elif analysis_type == "NPS Analysis":
-            display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
+            display_nps_analysis_section(image_array, mean_pv, pixel_spacing_row, pixel_spacing_col)
         elif analysis_type == "MTF Analysis":
             display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
         elif analysis_type == "Contrast Analysis":

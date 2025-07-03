@@ -101,10 +101,6 @@ def calculate_nps_metrics(image_array, mean_pv, pixel_spacing_row, pixel_spacing
 def display_nps_analysis_section(image_array, mean_pv, pixel_spacing_row, pixel_spacing_col):
     st.subheader("Noise Power Spectrum (NPS) Analysis")
 
-    # Initialize session state for current NPS results
-    # if 'current_nps_results' not in st.session_state:
-    #     st.session_state['current_nps_results'] = None
-
     if st.button("Run NPS Analysis"):
         with st.spinner("Calculating NPS..."):
             nps_results_dict = calculate_nps_metrics(image_array, mean_pv, pixel_spacing_row, pixel_spacing_col)

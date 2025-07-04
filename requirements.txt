@@ -5,4 +5,4 @@ matplotlib==3.10.3
 scikit-image==0.25.2
 streamlit==1.45.1
 
-git+https://github.com/jlleongarcia/pylinac.git#egg=pylinac
+git+https://github.com/jlleongarcia/pylinac.git@7a0680efc944536eb9df550229571ced81e83de2#egg=pylinac

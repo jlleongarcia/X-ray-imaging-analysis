@@ -1,5 +1,3 @@
-import subprocess
-import sys
 import streamlit as st
 import pydicom
 from PIL import Image
@@ -15,22 +13,6 @@ from threshold_contrast import display_threshold_contrast_section
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(page_title="X-ray Image Analysis Toolkit", layout="wide")
-
-# Use a session state variable to track if packages have been installed
-if 'packages_installed' not in st.session_state:
-    st.session_state['packages_installed'] = False
-
-def install_packages():
-    """Install packages from requirements.txt."""
-    if not st.session_state['packages_installed']:
-        st.info("Checking and installing required packages (this may take a moment)...")
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
-            st.success("Required packages installed successfully!")
-            st.session_state['packages_installed'] = True
-        except subprocess.CalledProcessError as e:
-            st.error(f"Error installing packages: {e}. Please check your internet connection or requirements.txt file.")
-            st.stop() # Stop the app if packages cannot be installed
 
 def main_app_ui():
     # --- Initialize session state for data sharing ---
@@ -55,7 +37,6 @@ def main_app_ui():
     pixel_spacing_col = None
     dicom_filename = None
     dicom_dataset = None # Store the full dataset
-    mean_for_nnps = None # Mean pixel value of the original (linearized) image for NNPS normalization
     is_difference_image = False # Flag to track if we are analyzing a difference image
 
     if uploaded_files:
@@ -135,7 +116,6 @@ def main_app_ui():
 
                 # Calculate difference image from stored values
                 image_array = img_arrays_stored_values[0] - img_arrays_stored_values[1]
-                mean_pv = np.mean(image_array) # Use mean of image for Normalized Noise Power Spectrum (NNPS)
                 dicom_filename = f"Difference of {filenames[0]} and {filenames[1]}"
                 
                 # Use pixel spacing from the first image
@@ -238,7 +218,7 @@ def main_app_ui():
         if analysis_type == "Uniformity Analysis":
             display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
         elif analysis_type == "NPS Analysis":
-            display_nps_analysis_section(image_array, mean_pv, pixel_spacing_row, pixel_spacing_col)
+            display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
         elif analysis_type == "MTF Analysis":
             display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
         elif analysis_type == "Contrast Analysis":
@@ -257,9 +237,6 @@ def main_app_ui():
 
 
 if __name__ == "__main__":
-
-    # Install dependencies
-    install_packages()
     
     # Run the main Streamlit UI
     main_app_ui()

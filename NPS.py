@@ -3,7 +3,7 @@ import numpy as np
 from pylinac.core.nps import noise_power_spectrum_2d, noise_power_spectrum_1d, average_power
 import pandas as pd
 
-def calculate_nps_metrics(image_array, mean_pv, pixel_spacing_row, pixel_spacing_col, **kwargs):
+def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col):
     """
     Calculates NPS metrics from an image array.
 
@@ -32,15 +32,33 @@ def calculate_nps_metrics(image_array, mean_pv, pixel_spacing_row, pixel_spacing
 
     pixel_spacing_avg = (pixel_spacing_row_safe + pixel_spacing_col_safe) / 2
 
-    # The noise_power_spectrum_2d function expects an iterable of ROIs.
-    rois_list = [image_array]
-
     try:
         # Edge effects arising from taking the Fourier transform of an image of finite dimensions need to be considered,
         # as these will lead to a large peak at ω = 0. To avoid this, a difference image, calculated from two images recorded 
         # under the identical conditions, is taken to calculate NPS. 
         # Such a difference image will have a mean of zero, negating edge effects, and thus the resulting NPS only needs to be halved to compensate.
-        nps_2d_result = noise_power_spectrum_2d(pixel_size=pixel_spacing_avg, rois=rois_list) / 2
+
+        # Define the list of allowed power-of-two values for the large central ROI and for the small ROIs within
+        allowed_big = [32, 64, 128, 256, 512, 1024, 2048, 4096]
+        allowed_small = [8, 16, 32, 64, 128, 256, 512]
+        selected_big = st.select_slider(
+            label="Slide to select the pixel size for the large central ROI:",
+            options=allowed_big,
+            value=1024
+        )
+        selected_small = st.select_slider(
+            label="Slide to select the pixel size for the large central ROI:",
+            options=allowed_small,
+            value=128
+        )
+        nps_2d_raw, mean_pv = noise_power_spectrum_2d(
+            image_array,
+            pixel_size=pixel_spacing_avg,
+            big_roi_size=selected_big,
+            small_roi_size=selected_small
+        )
+
+        nps_2d_result = nps_2d_raw / 2
         
         # NNPS definition: NNPS(fx, fy) = NPS(fx, fy) / (Mean Pixel Value of Largest ROI)^2
         nnps_2d = nps_2d_result / (mean_pv ** 2)
@@ -52,8 +70,8 @@ def calculate_nps_metrics(image_array, mean_pv, pixel_spacing_row, pixel_spacing
 
         # Calculate NNPS at specific frequencies (0.5 mm^-1, 2.0 mm^-1)
         # Spatial frequency axes
-        fy_axis_shifted = np.fft.fftshift(np.fft.fftfreq(image_array.shape[0], d=pixel_spacing_row_safe))
-        fx_axis_shifted = np.fft.fftshift(np.fft.fftfreq(image_array.shape[1], d=pixel_spacing_col_safe))
+        fy_axis_shifted = np.fft.fftshift(np.fft.fftfreq(selected_small, d=pixel_spacing_row_safe))
+        fx_axis_shifted = np.fft.fftshift(np.fft.fftfreq(selected_small, d=pixel_spacing_col_safe))
 
         target_fx = 0.5  # mm^-1
         target_fy = 2.0  # mm^-1
@@ -98,12 +116,12 @@ def calculate_nps_metrics(image_array, mean_pv, pixel_spacing_row, pixel_spacing
         st.error(f"Error during NPS calculation: {e}")
         return {"NPS_Status": f"Error: {e}"}
 
-def display_nps_analysis_section(image_array, mean_pv, pixel_spacing_row, pixel_spacing_col):
+def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col):
     st.subheader("Noise Power Spectrum (NPS) Analysis")
 
     if st.button("Run NPS Analysis"):
         with st.spinner("Calculating NPS..."):
-            nps_results_dict = calculate_nps_metrics(image_array, mean_pv, pixel_spacing_row, pixel_spacing_col)
+            nps_results_dict = calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col)
             
             if "NPS_Status" in nps_results_dict and "Error" in nps_results_dict["NPS_Status"]:
                 st.error(f"NPS Calculation Failed: {nps_results_dict['NPS_Status']}")

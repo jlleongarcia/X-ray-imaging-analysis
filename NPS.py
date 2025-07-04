@@ -63,29 +63,32 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col):
         # NNPS definition: NNPS(fx, fy) = NPS(fx, fy) / (Mean Pixel Value of Largest ROI)^2
         nnps_2d = nps_2d_result / (mean_pv ** 2)
 
-        # Calculate 1D NPS and NNPS from their 2D counterparts
-        nps_1d_result = noise_power_spectrum_1d(spectrum_2d=nps_2d_result)
+        # Separate both axis of NNPS to plot them and compare to radial average
         nnps_1d_result = noise_power_spectrum_1d(spectrum_2d=nnps_2d)
-        avg_power_result = average_power(nps1d=nps_1d_result)
+        nnps_x = np.fft.fftshift(nnps_2d.mean(axis=0))
+        nnps_y = np.fft.fftshift(nnps_2d.mean(axis=1))
 
         # Calculate NNPS at specific frequencies (0.5 mm^-1, 2.0 mm^-1)
         # Spatial frequency axes
-        fy_axis_shifted = np.fft.fftshift(np.fft.fftfreq(selected_small, d=pixel_spacing_row_safe))
-        fx_axis_shifted = np.fft.fftshift(np.fft.fftfreq(selected_small, d=pixel_spacing_col_safe))
+        f1_axis_shifted = np.fft.fftshift(np.fft.fftfreq(selected_small, d=pixel_spacing_row_safe))
+        f2_axis_shifted = np.fft.fftshift(np.fft.fftfreq(selected_small, d=pixel_spacing_col_safe))
 
-        target_fx = 0.5  # mm^-1
-        target_fy = 2.0  # mm^-1
+        target_f1 = 0.5  # mm^-1
+        target_f2 = 2.0  # mm^-1
 
         # Find the indices of the closest frequencies
-        idx_fx = np.argmin(np.abs(fx_axis_shifted - target_fx))
-        idx_fy = np.argmin(np.abs(fy_axis_shifted - target_fy))
+        idx_f1 = np.argmin(np.abs(f1_axis_shifted - target_f1))
+        idx_f2 = np.argmin(np.abs(f2_axis_shifted - target_f2))
 
         # Get the actual frequency values at these indices
-        actual_fx_value = fx_axis_shifted[idx_fx]
-        actual_fy_value = fy_axis_shifted[idx_fy]
+        actual_f1_value = f1_axis_shifted[idx_f1]
+        actual_f2_value = f2_axis_shifted[idx_f2]
 
-        # Get the NNPS value at these (closest) frequencies
-        nnps_at_target_freq = nnps_2d[idx_fy, idx_fx]
+        # Get the NNPS values at these (closest) frequencies
+        nnps_x_at_f1 = nnps_x[idx_f1]
+        nnps_x_at_f2 = nnps_x[idx_f2]
+        nnps_y_at_f1 = nnps_y[idx_f1]
+        nnps_y_at_f2 = nnps_y[idx_f2]
 
         # Calculate frequencies for 1D NNPS plot
         # The 1D NPS is a radial average. The frequency axis goes from 0 to Nyquist.
@@ -97,20 +100,26 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col):
 
         # Generate frequencies for the 1D NNPS plot
         # The number of points in the frequency axis should match the length of nnps_1d_result
-        frequencies_nps = np.linspace(0, max_nyquist_freq, len(nnps_1d_result))
-        nnps_data_for_chart = np.array([frequencies_nps, nnps_1d_result]).T
+        frequencies_nps = np.linspace(0, max_nyquist_freq, len(nnps_x))
+        nnps_data_for_chart = np.array([frequencies_nps, nnps_x, nnps_y]).T
+        # nnps_x_data_for_chart = np.array([frequencies_nps, nnps_x]).T
+        # nnps_y_data_for_chart = np.array([frequencies_nps, nnps_y]).T
 
         return {
             "NNPS_at_target_fx_fy": {
-                "target_fx": float(target_fx),
-                "target_fy": float(target_fy),
-                "actual_fx": float(actual_fx_value),
-                "actual_fy": float(actual_fy_value),
-                "value": float(nnps_at_target_freq) if not np.isnan(nnps_at_target_freq) else np.nan
+                "target_f1": float(target_f1),
+                "target_f2": float(target_f2),
+                "actual_f1": float(actual_f1_value),
+                "actual_f2": float(actual_f2_value),
+                "value_1x": float(nnps_x_at_f1),
+                "value_1y": float(nnps_y_at_f1),
+                "value_2x": float(nnps_x_at_f2),
+                "value_2y": float(nnps_y_at_f2),
             },
             "NNPS_1D_chart_data": nnps_data_for_chart,
+            # "NNPS_x_chart_data": nnps_x_data_for_chart,
+            # "NNPS_y_chart_data": nnps_y_data_for_chart,
             "x_axis_unit_nps": x_axis_unit_nps,
-            "Average_Power": float(avg_power_result),
         }
     except Exception as e:
         st.error(f"Error during NPS calculation: {e}")
@@ -127,12 +136,14 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                 st.error(f"NPS Calculation Failed: {nps_results_dict['NPS_Status']}")
             elif nps_results_dict and "NNPS_1D_chart_data" in nps_results_dict:
                 st.success("NPS Analysis Complete!")
-                st.subheader("1D Normalized Noise Power Spectrum")
+                st.subheader("Normalized Noise Power Spectrum")
                 
                 nnps_chart_data = nps_results_dict["NNPS_1D_chart_data"]
+                # nnps_x_chart_data = nps_results_dict["NNPS_x_chart_data"]
+                # nnps_y_chart_data = nps_results_dict["NNPS_y_chart_data"]
                 x_axis_unit_nps = nps_results_dict["x_axis_unit_nps"]
-                df_nnps = pd.DataFrame(nnps_chart_data, columns=[x_axis_unit_nps, 'NNPS'])
-                st.line_chart(df_nnps.set_index(x_axis_unit_nps))
+                df_nnps = pd.DataFrame(nnps_chart_data, columns=[x_axis_unit_nps, 'NNPS_x', 'NNPS_y'])
+                st.line_chart(df_nnps.set_index(x_axis_unit_nps), x_label=x_axis_unit_nps, y_label='NNPS')
                 
                 # Display the NNPS at target frequency if available
                 if "NNPS_at_target_fx_fy" in nps_results_dict:
@@ -144,6 +155,6 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                     st.write(f"Actual (fx, fy): ({target_info['actual_fx']:.2f} mm⁻¹, {target_info['actual_fy']:.2f} mm⁻¹)")
                     st.write(f"NNPS ({target_info['actual_fx']:.2f} mm⁻¹, {target_info['actual_fy']:.2f} mm⁻¹): {nnps_value_display}")
 
-                st.session_state['nnps_data'] = nnps_chart_data
+                st.session_state['nnps_data'] = nnps1d_chart_data
             else:
                 st.error("NPS calculation did not return expected results.")

@@ -91,9 +91,9 @@ def display_threshold_contrast_section(pixel_spacing_row, pixel_spacing_col):
     st.subheader("Object and System Parameters")
     col1, col2, col3 = st.columns(3)
     with col1:
-        sid = st.number_input("Source-to-Image Distance (SID) in cm", min_value=1.0, value=100.0, step=0.1, format="%.1f")
+        meas_size = st.number_input("Measured Size in cm", min_value=1.0, value=20.0, step=0.1, format="%.1f")
     with col2:
-        sod = st.number_input("Source-to-Object Distance (SOD) in cm", min_value=1.0, value=90.0, step=0.1, format="%.1f")
+        image_size = st.number_input("Image Size in cm", min_value=1.0, value=20.0, step=0.1, format="%.1f")
     with col3:
         object_radius = st.number_input("Object Radius (R) in mm", min_value=0.01, value=0.5, step=0.01, format="%.2f")
     
@@ -109,7 +109,7 @@ def display_threshold_contrast_section(pixel_spacing_row, pixel_spacing_col):
     # --- Step 3: Run calculation ---
     if st.button("Calculate Threshold Contrast", disabled=not (mtf_ready and nnps_ready)):
         with st.spinner("Calculating..."):
-            magnification = sid / sod
+            magnification = meas_size / image_size
             ct = calculate_threshold_contrast_advanced(
                 object_radius=object_radius, magnification=magnification, mtf_data=st.session_state['mtf_data'],
                 nnps_data=st.session_state['nnps_data'], nyquist_freq=nyquist_freq

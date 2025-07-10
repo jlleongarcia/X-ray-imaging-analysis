@@ -2,6 +2,7 @@ import streamlit as st
 import numpy as np
 from pylinac.core.nps import noise_power_spectrum_2d, noise_power_spectrum_1d, radial_average
 import pandas as pd
+import altair as alt
 
 def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col):
     """
@@ -22,8 +23,6 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col):
 
     if pixel_spacing_row is None or pixel_spacing_col is None or pixel_spacing_row <= 0 or pixel_spacing_col <= 0:
         st.warning("Pixel spacing is not valid or available. NPS spatial frequencies will be in cycles/pixel.")
-        pixel_spacing_row_safe = 1.0
-        pixel_spacing_col_safe = 1.0
         x_axis_unit_nps = "cycles/pixel"
     else:
         x_axis_unit_nps = "lp/mm"
@@ -63,7 +62,7 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col):
         nnps_2d = nps_2d_result / (mean_pv ** 2)
 
         # --- 1D NNPS Calculation ---
-        #Radially average the 2D NNPS to get the 1D NNPS
+        # Radially average the 2D NNPS to get the 1D NNPS
         nnps_1d_result = noise_power_spectrum_1d(spectrum_2d=nnps_2d)
 
         # To get the corresponding frequency axis, we do the same radial average
@@ -73,9 +72,10 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col):
 
         # 2. Create the 2D frequency grid (meshgrid).
         fx, fy = np.meshgrid(freqs, freqs)
+        f_grid = np.sqrt(fx**2 + fy**2)
 
         # 3. Apply the same radial average to get the 1D frecuency axis
-        freqs_nnps1d = radial_average(fx, fy)
+        freqs_nnps1d = radial_average(f_grid)
 
         # 4. Combine into a single array for charting and interpolation.
         nnps_data_for_chart = np.array([freqs_nnps1d, nnps_1d_result]).T
@@ -96,6 +96,7 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col):
         nyquist_freq = 0.5 / pixel_spacing_avg
 
         return {
+            "Nyquist": nyquist_freq,
             "NNPS_at_target_f": {
                 "target_f1": float(target_f1),
                 "value_1": float(nnps_1d_at_f1),
@@ -122,10 +123,60 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                 st.success("NPS Analysis Complete!")
                 st.subheader("Normalized Noise Power Spectrum")
                 
+                nyquist_freq = nps_results_dict["Nyquist"]
                 nnps_chart_data = nps_results_dict["NNPS_1D_chart_data"]
                 x_axis_unit_nps = nps_results_dict["x_axis_unit_nps"]
                 df_nnps = pd.DataFrame(nnps_chart_data, columns=[x_axis_unit_nps, 'NNPS_1D'])
-                st.line_chart(df_nnps.set_index(x_axis_unit_nps), x_label=x_axis_unit_nps, y_label='NNPS')
+
+                # ---- Create the Altair chart ----
+                chart = alt.Chart(df_nnps).mark_line(clip=True).encode(
+                    x=alt.X(x_axis_unit_nps, scale=alt.Scale(domainMax=nyquist_freq)),
+                    y='NNPS_1D'
+                ).properties(
+                    title='Radial Average of Normalized Noise Power Spectrum (NNPS)'
+                ).interactive()
+
+                # Create a selection that finds the nearest point based on X axis
+                # 'on="mouseover"' makes it activate when the mouse hovers
+                # 'empty="none"' ensures the selection is cleared when mouse leaves the chart
+                nearest_selection = alt.selection_point(
+                    fields=[x_axis_unit_nps],
+                    nearest=True,
+                    on='mouseover',
+                    empty='none',
+                    clear='mouseout' # Clear when mouse leaves the chart area
+                )
+
+                # Transparent selectors to enable the nearest selection across the entire chart width
+                selectors = alt.Chart(df_nnps).mark_point().encode(
+                    x=x_axis_unit_nps,
+                    opacity=alt.value(0),
+                ).add_params(nearest_selection)
+
+                # Text labels to display the x and y values, near the mouse's x-coordinate.
+                # First, create a text source for the text label:
+                text_source = chart.transform_calculate(
+                    hover_text=f"'NNPS: ' + format(datum.NNPS_1D, '.3f')"
+                )
+                text = text_source.mark_text(align='left', dx=7, dy=-7, fontSize=14, fontWeight="normal", stroke='white', strokeWidth=1).encode(
+                    text=alt.when(nearest_selection).then(
+                        alt.Text('hover_text:N')
+                    ).otherwise(
+                        alt.value('')
+                    ),
+                )
+
+                # Optionally, small circles to highlight the nearest data point on the line
+                points = chart.mark_circle().encode(
+                    opacity=alt.when(nearest_selection).then(alt.value(1)).otherwise(alt.value(0)),
+                ).add_params(nearest_selection)
+
+                # Layer all these components together
+                final_chart = alt.layer(
+                    chart, selectors, points, text
+                )
+
+                st.altair_chart(final_chart, use_container_width=True)
                 
                 # Display the NNPS at target frequency if available
                 if "NNPS_at_target_f" in nps_results_dict:
@@ -134,8 +185,8 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                     nnps_value_1 = f"{target_info['value_1']:.3f}" if not np.isnan(target_info['value_1']) else "N/A" # .e for scientific notation
                     nnps_value_2 = f"{target_info['value_2']:.3f}" if not np.isnan(target_info['value_2']) else "N/A"
                     
-                    st.write(f"**NNPS at {target_info['target_f1']:.2f} {x_axis_unit_nps}** {nnps_value_1}")
-                    st.write(f"**NNPS at {target_info['target_f2']:.2f} {x_axis_unit_nps}** {nnps_value_2}")
+                    st.write(f"**NNPS at {target_info['target_f1']:.2f} {x_axis_unit_nps}**: {nnps_value_1}")
+                    st.write(f"**NNPS at {target_info['target_f2']:.2f} {x_axis_unit_nps}**: {nnps_value_2}")
 
 
                 st.session_state['nnps_data'] = nnps_chart_data

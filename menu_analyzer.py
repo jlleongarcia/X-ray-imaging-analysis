@@ -30,182 +30,268 @@ def main_app_ui():
 
     # --- File Upload and Initial Image Display ---
     # Use a key for the file uploader to manage its state explicitly
-    uploaded_files = st.sidebar.file_uploader("Choose DICOM file(s)", type=["dcm", "dicom"], accept_multiple_files=True)
+    uploaded_files = st.sidebar.file_uploader(
+        "Choose DICOM (.dcm) or RAW (.raw) file(s)",
+        type=["dcm", "dicom", "raw"],
+        accept_multiple_files=True
+    )
 
     image_array = None
     pixel_spacing_row = None
     pixel_spacing_col = None
     dicom_filename = None
-    dicom_dataset = None # Store the full dataset
-    is_difference_image = False # Flag to track if we are analyzing a difference image
+    dicom_dataset = None  # Store the full dataset, will be None for RAW
+    is_difference_image = False  # Flag to track if we are analyzing a difference image
 
     if uploaded_files:
-        if len(uploaded_files) == 1:
-            uploaded_file_widget = uploaded_files[0]
-            dicom_filename = uploaded_file_widget.name
+        # Determine file types
+        file_extensions = {os.path.splitext(f.name)[1].lower() for f in uploaded_files}
+        is_raw_upload = '.raw' in file_extensions
+        is_dicom_upload = '.dcm' in file_extensions or '.dicom' in file_extensions
+
+        if is_raw_upload and is_dicom_upload:
+            st.error("Mixed file types are not supported. Please upload either only DICOM files or only RAW files.")
+            return
+
+        if is_raw_upload:
+            if len(uploaded_files) > 1:
+                st.error("Analysis of multiple RAW files is not yet supported. Please upload a single .raw file.")
+                return
+
+            # --- RAW File Processing ---
+            raw_file = uploaded_files[0]
+            dicom_filename = raw_file.name
+
+            st.sidebar.subheader("RAW Image Parameters")
+            st.sidebar.info("Please provide the details for your RAW image file.")
+
+            dtype_map = {
+                '16-bit Unsigned Integer': np.uint16,
+                '8-bit Unsigned Integer': np.uint8,
+                '32-bit Float': np.float32
+            }
+            dtype_str = st.sidebar.selectbox(
+                "Pixel Data Type",
+                options=list(dtype_map.keys()),
+                index=0,
+                key="raw_dtype",
+                help="Select the data type first to auto-suggest dimensions."
+            )
+            np_dtype = dtype_map[dtype_str]
+
             try:
-                dicom_dataset = pydicom.dcmread(uploaded_file_widget)
-                if 'PixelData' in dicom_dataset:
-                    image_array = dicom_dataset.pixel_array
+                raw_data = raw_file.getvalue()
+                itemsize = np.dtype(np_dtype).itemsize
+                file_size = len(raw_data)
+
+                if file_size % itemsize != 0:
+                    st.sidebar.error(f"File size ({file_size} bytes) is not a multiple of the pixel size ({itemsize} bytes). Please check the selected data type.")
+                    return
+
+                total_pixels = file_size // itemsize
+
+                def get_factors(n):
+                    factors = set()
+                    for i in range(1, int(np.sqrt(n)) + 1):
+                        if n % i == 0:
+                            factors.add((i, n // i))
+                            factors.add((n // i, i))
+                    return sorted(list(factors))
+
+                possible_dims = get_factors(total_pixels)
+
+                if not possible_dims:
+                    st.sidebar.warning("Could not determine any possible dimensions. Please enter manually.")
+                    width = st.sidebar.number_input("Image Width (pixels)", min_value=1, value=1024)
+                    height = st.sidebar.number_input("Image Height (pixels)", min_value=1, value=1024)
                 else:
-                    st.error("DICOM file does not contain pixel data.")
-                
-                if 'PixelSpacing' in dicom_dataset:
-                    pixel_spacing = dicom_dataset.PixelSpacing
-                    if len(pixel_spacing) == 2:
-                        pixel_spacing_row = float(pixel_spacing[0])
-                        pixel_spacing_col = float(pixel_spacing[1])
-                    else:
-                        st.warning(f"Pixel Spacing tag (0028,0030) has unexpected format: {pixel_spacing}.")
-                else:
-                    st.warning("Pixel Spacing tag (0028,0030) not found in DICOM header.")
+                    # Find the most "square" dimension and assign it.
+                    # Based on feedback, the factors are swapped to match image orientation.
+                    default_dim_index = len(possible_dims) // 2
+                    height, width = possible_dims[default_dim_index]
+                    st.sidebar.info(f"Auto-detected dimensions: **{width} x {height}**")
+
+                pixel_spacing_row = st.sidebar.number_input("Pixel Spacing Row (mm/px)", min_value=0.001, value=0.1, step=0.01, format="%.3f", key="raw_ps_row")
+                pixel_spacing_col = st.sidebar.number_input("Pixel Spacing Col (mm/px)", min_value=0.001, value=0.1, step=0.01, format="%.3f", key="raw_ps_col")
+
+                image_array = np.frombuffer(raw_data, dtype=np_dtype).reshape((height, width))
+                st.sidebar.success("RAW file loaded successfully.")
 
             except Exception as e:
-                st.error(f"Error reading DICOM file: {e}")
-                image_array = None
-                dicom_dataset = None
+                st.error(f"Error processing RAW file: {e}")
+                return
 
-        elif len(uploaded_files) == 2:
-            is_difference_image = True
-            st.info("Two DICOM files uploaded. Each image will be reverted to its raw 'stored values' before subtraction to create the difference image.")
-            img_arrays_stored_values = []
-            pixel_spacings = []
-            filenames = []
-            dicom_dataset = None
-
-            for i, uploaded_file_widget in enumerate(uploaded_files):
-                filenames.append(uploaded_file_widget.name)
+        elif is_dicom_upload:
+            if len(uploaded_files) == 1:
+                uploaded_file_widget = uploaded_files[0]
+                dicom_filename = uploaded_file_widget.name
                 try:
-                    ds_temp = pydicom.dcmread(uploaded_file_widget, force=True)
-                    if i == 0:
-                        dicom_dataset = ds_temp  # Store the first dataset object
-                    if 'PixelData' not in ds_temp:
-                        st.error(f"DICOM file {uploaded_file_widget.name} does not contain pixel data.")
-                        return
-
-                    # Get actual pixel values (pydicom applies rescale by default) and revert to stored values
-                    actual_pixel_array = ds_temp.pixel_array.astype(np.float64)
-                    rescale_slope = getattr(ds_temp, 'RescaleSlope', 1.0)
-                    rescale_intercept = getattr(ds_temp, 'RescaleIntercept', 0.0)
-                    
-                    if rescale_slope == 0:
-                        st.error(f"Rescale Slope is zero in {uploaded_file_widget.name}, cannot revert to stored values.")
-                        return
-                    
-                    stored_pixel_array = (actual_pixel_array - rescale_intercept) / rescale_slope
-                    img_arrays_stored_values.append(stored_pixel_array)
-
-                    # Get pixel spacing
-                    if 'PixelSpacing' in ds_temp and len(ds_temp.PixelSpacing) == 2:
-                        ps = ds_temp.PixelSpacing
-                        pixel_spacings.append((float(ps[0]), float(ps[1])))
+                    dicom_dataset = pydicom.dcmread(uploaded_file_widget)
+                    if 'PixelData' in dicom_dataset:
+                        image_array = dicom_dataset.pixel_array
                     else:
-                        st.warning(f"Pixel Spacing not found or invalid in {uploaded_file_widget.name}.")
-                        pixel_spacings.append((None, None))
+                        st.error("DICOM file does not contain pixel data.")
+                        return
+                    
+                    if 'PixelSpacing' in dicom_dataset:
+                        pixel_spacing = dicom_dataset.PixelSpacing
+                        if len(pixel_spacing) == 2:
+                            pixel_spacing_row = float(pixel_spacing[0])
+                            pixel_spacing_col = float(pixel_spacing[1])
+                        else:
+                            st.warning(f"Pixel Spacing tag (0028,0030) has unexpected format: {pixel_spacing}.")
+                    else:
+                        st.warning("Pixel Spacing tag (0028,0030) not found in DICOM header.")
 
                 except Exception as e:
-                    st.error(f"Error reading DICOM file {uploaded_file_widget.name}: {e}")
+                    st.error(f"Error reading DICOM file: {e}")
                     return
 
-            if len(img_arrays_stored_values) == 2:
-                if img_arrays_stored_values[0].shape != img_arrays_stored_values[1].shape:
-                    st.error(f"Image dimensions mismatch: {filenames[0]} ({img_arrays_stored_values[0].shape}) vs {filenames[1]} ({img_arrays_stored_values[1].shape}). Cannot calculate difference.")
-                    return
-                if pixel_spacings[0] != pixel_spacings[1] and pixel_spacings[0] is not None and pixel_spacings[1] is not None:
-                    st.warning(f"Pixel spacings mismatch: {filenames[0]} ({pixel_spacings[0]}) vs {filenames[1]} ({pixel_spacings[1]}). Using spacing from the first image.")
+            elif len(uploaded_files) == 2:
+                is_difference_image = True
+                st.info("Two DICOM files uploaded. Each image will be reverted to its raw 'stored values' before subtraction to create the difference image.")
+                img_arrays_stored_values = []
+                pixel_spacings = []
+                filenames = []
+                dicom_dataset = None
 
-                # Calculate difference image from stored values
-                image_array = img_arrays_stored_values[0] - img_arrays_stored_values[1]
-                dicom_filename = f"Difference of {filenames[0]} and {filenames[1]}"
-                
-                # Use pixel spacing from the first image
-                if pixel_spacings[0][0] is not None:
-                    pixel_spacing_row, pixel_spacing_col = pixel_spacings[0]
+                for i, uploaded_file_widget in enumerate(uploaded_files):
+                    filenames.append(uploaded_file_widget.name)
+                    try:
+                        ds_temp = pydicom.dcmread(uploaded_file_widget, force=True)
+                        if i == 0:
+                            dicom_dataset = ds_temp  # Store the first dataset object
+                        if 'PixelData' not in ds_temp:
+                            st.error(f"DICOM file {uploaded_file_widget.name} does not contain pixel data.")
+                            return
+
+                        # Get actual pixel values (pydicom applies rescale by default) and revert to stored values
+                        actual_pixel_array = ds_temp.pixel_array.astype(np.float64)
+                        rescale_slope = getattr(ds_temp, 'RescaleSlope', 1.0)
+                        rescale_intercept = getattr(ds_temp, 'RescaleIntercept', 0.0)
+                        
+                        if rescale_slope == 0:
+                            st.error(f"Rescale Slope is zero in {uploaded_file_widget.name}, cannot revert to stored values.")
+                            return
+                        
+                        stored_pixel_array = (actual_pixel_array - rescale_intercept) / rescale_slope
+                        img_arrays_stored_values.append(stored_pixel_array)
+
+                        # Get pixel spacing
+                        if 'PixelSpacing' in ds_temp and len(ds_temp.PixelSpacing) == 2:
+                            ps = ds_temp.PixelSpacing
+                            pixel_spacings.append((float(ps[0]), float(ps[1])))
+                        else:
+                            st.warning(f"Pixel Spacing not found or invalid in {uploaded_file_widget.name}.")
+                            pixel_spacings.append((None, None))
+
+                    except Exception as e:
+                        st.error(f"Error reading DICOM file {uploaded_file_widget.name}: {e}")
+                        return
+
+                if len(img_arrays_stored_values) == 2:
+                    if img_arrays_stored_values[0].shape != img_arrays_stored_values[1].shape:
+                        st.error(f"Image dimensions mismatch: {filenames[0]} ({img_arrays_stored_values[0].shape}) vs {filenames[1]} ({img_arrays_stored_values[1].shape}). Cannot calculate difference.")
+                        return
+                    if pixel_spacings[0] != pixel_spacings[1] and pixel_spacings[0] is not None and pixel_spacings[1] is not None:
+                        st.warning(f"Pixel spacings mismatch: {filenames[0]} ({pixel_spacings[0]}) vs {filenames[1]} ({pixel_spacings[1]}). Using spacing from the first image.")
+
+                    # Calculate difference image from stored values
+                    image_array = img_arrays_stored_values[0] - img_arrays_stored_values[1]
+                    dicom_filename = f"Difference of {filenames[0]} and {filenames[1]}"
+                    
+                    # Use pixel spacing from the first image
+                    if pixel_spacings[0][0] is not None:
+                        pixel_spacing_row, pixel_spacing_col = pixel_spacings[0]
+                    else:
+                        st.warning("Pixel spacing not available for difference image. NPS will use cycles/pixel.")
                 else:
-                    st.warning("Pixel spacing not available for difference image. NPS will use cycles/pixel.")
+                    st.warning("Could not process the two DICOM files.")
+                    return
             else:
                 st.warning("Please upload either one or two DICOM files for analysis.")
+                return
 
     # --- Main Area ---
-    if image_array is not None and dicom_dataset is not None:
-        st.header(f"Uploaded Image: {dicom_filename}")
+    if image_array is not None:
+        st.header(f"Analysis for: {dicom_filename}")
         if pixel_spacing_row and pixel_spacing_col:
             st.write(f"Pixel Spacing: {pixel_spacing_row:.3f} mm/px (row) x {pixel_spacing_col:.3f} mm/px (col)")
         else:
-            st.write("Pixel Spacing: Not available or not applicable for selected analysis.")
+            st.write("Pixel Spacing: Not available. Some analyses may be disabled or use pixel-based units.")
 
         # --- DICOM Header Information and Raw Data Option ---
-        st.subheader("DICOM Image Properties")
-        
-        # Display Image Type
-        image_type = getattr(dicom_dataset, 'ImageType', ['UNKNOWN'])
-        st.write(f"**Image Type:** {', '.join(image_type)}")
-        if 'DERIVED' in image_type:
-            st.warning("This image is 'DERIVED', meaning it has undergone processing (e.g., reconstruction, filtering) from original data.")
+        if dicom_dataset is not None:
+            st.subheader("DICOM Image Properties")
+            
+            # Display Image Type
+            image_type = getattr(dicom_dataset, 'ImageType', ['UNKNOWN'])
+            st.write(f"**Image Type:** {', '.join(image_type)}")
+            if 'DERIVED' in image_type:
+                st.warning("This image is 'DERIVED', meaning it has undergone processing (e.g., reconstruction, filtering) from original data.")
 
-        # Display Rescale Slope and Intercept
-        rescale_slope = getattr(dicom_dataset, 'RescaleSlope', 1.0)
-        rescale_intercept = getattr(dicom_dataset, 'RescaleIntercept', 0.0)
-        st.write(f"**Rescale Slope (0028,1053):** {rescale_slope}")
-        st.write(f"**Rescale Intercept (0028,1052):** {rescale_intercept}")
+            # Display Rescale Slope and Intercept
+            rescale_slope = getattr(dicom_dataset, 'RescaleSlope', 1.0)
+            rescale_intercept = getattr(dicom_dataset, 'RescaleIntercept', 0.0)
+            st.write(f"**Rescale Slope (0028,1053):** {rescale_slope}")
+            st.write(f"**Rescale Intercept (0028,1052):** {rescale_intercept}")
 
-        # Display Pixel Intensity Relationship
-        pixel_intensity_relationship = getattr(dicom_dataset, 'PixelIntensityRelationship', 'UNKNOWN')
-        st.write(f"**Pixel Intensity Relationship (0028,1040):** {pixel_intensity_relationship}")
+            # Display Pixel Intensity Relationship
+            pixel_intensity_relationship = getattr(dicom_dataset, 'PixelIntensityRelationship', 'UNKNOWN')
+            st.write(f"**Pixel Intensity Relationship (0028,1040):** {pixel_intensity_relationship}")
 
-        if is_difference_image:
-            st.success("This is a difference image. It was created by reverting each source image to its raw stored values before subtraction. The analysis will be performed on this difference image.")
-        else:
-            # Option to revert to stored pixel values
-            st.markdown("---")
-            st.subheader("Raw Data Options")
-            if rescale_slope != 1.0 or rescale_intercept != 0.0:
-                revert_to_stored_pixels = st.checkbox(
-                    "Revert to Stored Pixel Values (undo Rescale transformation)", value=True,
-                    help="If checked, the image pixel values will be converted back to their original stored integer values before Rescale Slope/Intercept were applied. This is useful if you want to analyze the rawest form of the pixel data as stored in the DICOM file."
-                )
-                if revert_to_stored_pixels:
-                    if pixel_intensity_relationship == 'LIN':
-                        # Apply inverse conversion: Stored_Value = (Actual_Value - RescaleIntercept) / RescaleSlope
-                        # Ensure float division
-                        image_array = (image_array.astype(np.float64) - rescale_intercept) / rescale_slope
-                        st.info("Image pixel values reverted to stored values (undoing Rescale transformation).")
-                    else:
-                        st.warning(f"Pixel Intensity Relationship is '{pixel_intensity_relationship}', not 'LIN'. Applying inverse Rescale may not fully represent the original stored values if a non-linear relationship was intended.")
-                        # Still apply the linear inverse as requested, but with a warning
-                        image_array = (image_array.astype(np.float64) - rescale_intercept) / rescale_slope
-                        st.info("Image pixel values reverted to stored values (undoing Rescale transformation) despite non-linear intensity relationship.")
-                else:
-                    st.info("Image pixel values are in physical units (e.g., Hounsfield Units for CT) as provided by pydicom's default processing of Rescale Slope/Intercept.")
+            if is_difference_image:
+                st.success("This is a difference image created from two DICOMs. It was created by reverting each source image to its raw stored values before subtraction.")
             else:
-                st.info("No Rescale Slope or Intercept applied to this image, or values are default (1.0, 0.0). Image values are already in their 'raw' form as stored.")
+                # Option to revert to stored pixel values
+                st.markdown("---")
+                st.subheader("Data Processing Options")
+                if rescale_slope != 1.0 or rescale_intercept != 0.0:
+                    revert_to_stored_pixels = st.checkbox(
+                        "Revert to Stored Pixel Values (undo Rescale transformation)", value=True,
+                        help="If checked, the image pixel values will be converted back to their original stored integer values before Rescale Slope/Intercept were applied. This is useful if you want to analyze the rawest form of the pixel data as stored in the DICOM file."
+                    )
+                    if revert_to_stored_pixels:
+                        if pixel_intensity_relationship == 'LIN':
+                            image_array = (image_array.astype(np.float64) - rescale_intercept) / rescale_slope
+                            st.info("Image pixel values reverted to stored values (undoing Rescale transformation).")
+                        else:
+                            st.warning(f"Pixel Intensity Relationship is '{pixel_intensity_relationship}', not 'LIN'. Applying inverse Rescale may not fully represent the original stored values if a non-linear relationship was intended.")
+                            image_array = (image_array.astype(np.float64) - rescale_intercept) / rescale_slope
+                            st.info("Image pixel values reverted to stored values (undoing Rescale transformation) despite non-linear intensity relationship.")
+                    else:
+                        st.info("Image pixel values are in physical units (e.g., Hounsfield Units for CT) as provided by pydicom's default processing of Rescale Slope/Intercept.")
+                else:
+                    st.info("No Rescale Slope or Intercept applied to this image, or values are default (1.0, 0.0). Image values are already in their 'raw' form as stored.")
+        else:  # This is a RAW file
+            st.info("This is a RAW image file. Analysis will be performed directly on the pixel data using the parameters you provided in the sidebar.")
 
         # Display original image
-        display_array = image_array.copy() # Work on a copy to avoid modifying the array passed to analysis
-        
-        # Normalize for display, handling float values
-        if display_array.dtype == np.float64 or display_array.dtype == np.float32:
-            # Handle potential NaN or inf values if they occur from division by zero slope
+        display_array = image_array.copy()  # Work on a copy to avoid modifying the array passed to analysis
+
+        # Normalize for display
+        min_val = np.min(display_array)
+        max_val = np.max(display_array)
+
+        # Handle potential NaN or inf values from previous calculations
+        if np.issubdtype(display_array.dtype, np.floating):
             display_array[np.isnan(display_array)] = 0
             display_array[np.isinf(display_array)] = 0
-            
             min_val = np.min(display_array)
             max_val = np.max(display_array)
-            if max_val > min_val:
-                display_array = (display_array - min_val) / (max_val - min_val) * 255.0
-            else:
-                display_array = np.zeros_like(display_array) # Handle constant image
-            display_array = display_array.astype(np.uint8)
-        else: # Original uint8/uint16/etc.
-            if np.max(display_array) > np.min(display_array):
-                display_array = (display_array - np.min(display_array)) / (np.max(display_array) - np.min(display_array)) * 255.0
-            else:
-                display_array = np.zeros_like(display_array)
-            display_array = display_array.astype(np.uint8)
+
+        if max_val > min_val:
+            # Normalize to 0-255 range
+            display_array = 255 * (display_array - min_val) / (max_val - min_val)
+        else:
+            # Handle constant image
+            display_array = np.zeros_like(display_array)
+
+        display_array = display_array.astype(np.uint8)
 
         if len(display_array.shape) == 2:
-            img_pil = Image.fromarray(display_array, mode='L')
-            st.image(img_pil, caption="Original Image (Normalized for Display)", use_container_width=True)
+            img_pil = Image.fromarray(display_array)
+            st.image(img_pil, caption="Image Preview (Normalized for Display)", use_container_width=True)
         else:
             st.warning(f"Image has unexpected shape {image_array.shape}. Cannot display directly.")
         
@@ -225,7 +311,7 @@ def main_app_ui():
             display_threshold_contrast_section(pixel_spacing_row, pixel_spacing_col)
 
     elif not uploaded_files:
-        st.info("Please upload one or two DICOM files using the sidebar to begin analysis.")
+        st.info("Please upload one or two DICOM files, or a single RAW file, using the sidebar to begin analysis.")
 
     # --- Add a clear session state button for debugging ---
     st.sidebar.markdown("---")

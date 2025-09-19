@@ -10,6 +10,8 @@ from uniformity import display_uniformity_analysis_section
 from NPS import display_nps_analysis_section
 from MTF import display_mtf_analysis_section
 from threshold_contrast import display_threshold_contrast_section
+from comparison_tool import display_comparison_tool_section
+from dicom_utils import get_raw_pixel_array, _detect_footer_rows
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(page_title="X-ray Image Analysis Toolkit", layout="wide")
@@ -49,15 +51,14 @@ def main_app_ui():
         is_raw_upload = '.raw' in file_extensions
         is_dicom_upload = '.dcm' in file_extensions or '.dicom' in file_extensions
 
-        if is_raw_upload and is_dicom_upload:
-            st.error("Mixed file types are not supported. Please upload either only DICOM files or only RAW files.")
-            return
+        # The comparison tool handles mixed files. For all other analyses, we only allow one type.
+        is_comparison_candidate = is_raw_upload and is_dicom_upload
 
-        if is_raw_upload:
+        if is_raw_upload and not is_dicom_upload:
             if len(uploaded_files) > 1:
                 st.error("Analysis of multiple RAW files is not yet supported. Please upload a single .raw file.")
                 return
-
+            
             # --- RAW File Processing ---
             raw_file = uploaded_files[0]
             dicom_filename = raw_file.name
@@ -106,7 +107,6 @@ def main_app_ui():
                     height = st.sidebar.number_input("Image Height (pixels)", min_value=1, value=1024)
                 else:
                     # Find the most "square" dimension and assign it.
-                    # Based on feedback, the factors are swapped to match image orientation.
                     default_dim_index = len(possible_dims) // 2
                     height, width = possible_dims[default_dim_index]
                     st.sidebar.info(f"Auto-detected dimensions: **{width} x {height}**")
@@ -121,14 +121,26 @@ def main_app_ui():
                 st.error(f"Error processing RAW file: {e}")
                 return
 
-        elif is_dicom_upload:
+        elif is_dicom_upload and not is_raw_upload:
+            st.sidebar.subheader("DICOM Processing Options")
+            auto_trim_footer = st.sidebar.checkbox(
+                "Auto-trim DICOM footer",
+                value=True,
+                help="Automatically detect and remove rows containing burned-in text at the bottom of the image."
+            )
+
             if len(uploaded_files) == 1:
                 uploaded_file_widget = uploaded_files[0]
                 dicom_filename = uploaded_file_widget.name
                 try:
                     dicom_dataset = pydicom.dcmread(uploaded_file_widget)
                     if 'PixelData' in dicom_dataset:
-                        image_array = dicom_dataset.pixel_array
+                        # Get the raw, untransformed pixel data directly
+                        image_array = get_raw_pixel_array(dicom_dataset, auto_trim_footer=auto_trim_footer)
+                        if auto_trim_footer:
+                            rows_trimmed = dicom_dataset.Rows - image_array.shape[0]
+                            if rows_trimmed > 0:
+                                st.sidebar.info(f"Auto-trimmed {rows_trimmed} rows from DICOM footer.")
                     else:
                         st.error("DICOM file does not contain pixel data.")
                         return
@@ -165,16 +177,8 @@ def main_app_ui():
                             st.error(f"DICOM file {uploaded_file_widget.name} does not contain pixel data.")
                             return
 
-                        # Get actual pixel values (pydicom applies rescale by default) and revert to stored values
-                        actual_pixel_array = ds_temp.pixel_array.astype(np.float64)
-                        rescale_slope = getattr(ds_temp, 'RescaleSlope', 1.0)
-                        rescale_intercept = getattr(ds_temp, 'RescaleIntercept', 0.0)
-                        
-                        if rescale_slope == 0:
-                            st.error(f"Rescale Slope is zero in {uploaded_file_widget.name}, cannot revert to stored values.")
-                            return
-                        
-                        stored_pixel_array = (actual_pixel_array - rescale_intercept) / rescale_slope
+                        # Directly get the raw stored pixel data for each image
+                        stored_pixel_array = get_raw_pixel_array(ds_temp, auto_trim_footer=auto_trim_footer)
                         img_arrays_stored_values.append(stored_pixel_array)
 
                         # Get pixel spacing
@@ -213,7 +217,7 @@ def main_app_ui():
                 return
 
     # --- Main Area ---
-    if image_array is not None:
+    if image_array is not None: # Standard analysis path
         st.header(f"Analysis for: {dicom_filename}")
         if pixel_spacing_row and pixel_spacing_col:
             st.write(f"Pixel Spacing: {pixel_spacing_row:.3f} mm/px (row) x {pixel_spacing_col:.3f} mm/px (col)")
@@ -240,29 +244,41 @@ def main_app_ui():
             pixel_intensity_relationship = getattr(dicom_dataset, 'PixelIntensityRelationship', 'UNKNOWN')
             st.write(f"**Pixel Intensity Relationship (0028,1040):** {pixel_intensity_relationship}")
 
+            # Define and Display Photometric Interpretation
+            photometric_interpretation = getattr(dicom_dataset, 'PhotometricInterpretation', 'MONOCHROME2')
+            st.write(f"**Photometric Interpretation (0028,0004):** {photometric_interpretation}")
+
+
             if is_difference_image:
                 st.success("This is a difference image created from two DICOMs. It was created by reverting each source image to its raw stored values before subtraction.")
-            else:
-                # Option to revert to stored pixel values
+            elif not is_raw_upload: # Only show this for single DICOM files
                 st.markdown("---")
                 st.subheader("Data Processing Options")
-                if rescale_slope != 1.0 or rescale_intercept != 0.0:
-                    revert_to_stored_pixels = st.checkbox(
-                        "Revert to Stored Pixel Values (undo Rescale transformation)", value=True,
-                        help="If checked, the image pixel values will be converted back to their original stored integer values before Rescale Slope/Intercept were applied. This is useful if you want to analyze the rawest form of the pixel data as stored in the DICOM file."
-                    )
-                    if revert_to_stored_pixels:
-                        if pixel_intensity_relationship == 'LIN':
-                            image_array = (image_array.astype(np.float64) - rescale_intercept) / rescale_slope
-                            st.info("Image pixel values reverted to stored values (undoing Rescale transformation).")
-                        else:
-                            st.warning(f"Pixel Intensity Relationship is '{pixel_intensity_relationship}', not 'LIN'. Applying inverse Rescale may not fully represent the original stored values if a non-linear relationship was intended.")
-                            image_array = (image_array.astype(np.float64) - rescale_intercept) / rescale_slope
-                            st.info("Image pixel values reverted to stored values (undoing Rescale transformation) despite non-linear intensity relationship.")
-                    else:
-                        st.info("Image pixel values are in physical units (e.g., Hounsfield Units for CT) as provided by pydicom's default processing of Rescale Slope/Intercept.")
+                st.info("By default, analysis is performed on the **raw stored pixel values** from the DICOM file.")
+
+                apply_transformations = st.checkbox(
+                    "Apply DICOM visual transformations (Rescale/Invert)", value=False,
+                    help="If checked, the standard DICOM transformations (Rescale Slope/Intercept and MONOCHROME1 inversion) will be applied to the pixel data before analysis."
+                )
+
+                if apply_transformations:
+                    if 'ModalityLUTSequence' in dicom_dataset:
+                        st.warning("This image contains a 'ModalityLUTSequence'. Applying only the linear Rescale/Intercept may not match the fully processed image.")
+
+                    # Apply transformations
+                    transformed_array = image_array.astype(np.float64)
+                    if photometric_interpretation == 'MONOCHROME1':
+                        bits_stored = getattr(dicom_dataset, 'BitsStored', 16)
+                        max_val = (2**bits_stored) - 1
+                        transformed_array = max_val - transformed_array
+                    
+                    if rescale_slope != 1.0 or rescale_intercept != 0.0:
+                        transformed_array = transformed_array * rescale_slope + rescale_intercept
+                    
+                    image_array = transformed_array
+                    st.success("DICOM visual transformations have been applied to the data.")
                 else:
-                    st.info("No Rescale Slope or Intercept applied to this image, or values are default (1.0, 0.0). Image values are already in their 'raw' form as stored.")
+                    st.info("Continuing analysis with raw stored pixel values.")
         else:  # This is a RAW file
             st.info("This is a RAW image file. Analysis will be performed directly on the pixel data using the parameters you provided in the sidebar.")
 
@@ -298,7 +314,7 @@ def main_app_ui():
         st.sidebar.markdown("---")
         analysis_type = st.sidebar.selectbox(
             "Choose Analysis Type:",
-            ("Select an analysis...", "Uniformity Analysis", "NPS Analysis", "MTF Analysis", "Contrast Analysis")
+            ("Select an analysis...", "Uniformity Analysis", "NPS Analysis", "MTF Analysis", "Contrast Analysis", "Developer: Compare RAW vs DICOM")
         )
 
         if analysis_type == "Uniformity Analysis":
@@ -309,6 +325,14 @@ def main_app_ui():
             display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
         elif analysis_type == "Contrast Analysis":
             display_threshold_contrast_section(pixel_spacing_row, pixel_spacing_col)
+        elif analysis_type == "Developer: Compare RAW vs DICOM":
+            # This case should not be hit if image_array is loaded, but as a fallback:
+            st.error("Comparison tool cannot be run on a single pre-loaded image. Please upload one DICOM and one RAW file together.")
+
+    elif uploaded_files: # This handles the comparison case where image_array is not pre-loaded
+        analysis_type = st.sidebar.selectbox("Choose Analysis Type:", ("Developer: Compare RAW vs DICOM",))
+        if analysis_type == "Developer: Compare RAW vs DICOM":
+            display_comparison_tool_section(uploaded_files)
 
     elif not uploaded_files:
         st.info("Please upload one or two DICOM files, or a single RAW file, using the sidebar to begin analysis.")

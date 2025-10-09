@@ -11,7 +11,6 @@ from NPS import display_nps_analysis_section
 from MTF import display_mtf_analysis_section
 from threshold_contrast import display_threshold_contrast_section
 from comparison_tool import display_comparison_tool_section
-from dicom_utils import get_raw_pixel_array, _detect_footer_rows
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(page_title="X-ray Image Analysis Toolkit", layout="wide")
@@ -123,11 +122,9 @@ def main_app_ui():
 
         elif is_dicom_upload and not is_raw_upload:
             st.sidebar.subheader("DICOM Processing Options")
-            auto_trim_footer = st.sidebar.checkbox(
-                "Auto-trim DICOM footer",
-                value=True,
-                help="Automatically detect and remove rows containing burned-in text at the bottom of the image."
-            )
+            # Note: DICOM-to-RAW conversion feature removed. We will use the stored pixel data
+            # available in the DICOM (`pixel_array`) for analysis. Any footer trimming logic
+            # has been removed.
 
             if len(uploaded_files) == 1:
                 uploaded_file_widget = uploaded_files[0]
@@ -135,12 +132,18 @@ def main_app_ui():
                 try:
                     dicom_dataset = pydicom.dcmread(uploaded_file_widget)
                     if 'PixelData' in dicom_dataset:
-                        # Get the raw, untransformed pixel data directly
-                        image_array = get_raw_pixel_array(dicom_dataset, auto_trim_footer=auto_trim_footer)
-                        if auto_trim_footer:
-                            rows_trimmed = dicom_dataset.Rows - image_array.shape[0]
-                            if rows_trimmed > 0:
-                                st.sidebar.info(f"Auto-trimmed {rows_trimmed} rows from DICOM footer.")
+                        # Use pydicom's pixel_array (the stored/stored values) for analysis.
+                        # Note: we intentionally do NOT attempt to recreate a RAW file or
+                        # infer processing steps beyond the final stored pixel values.
+                        try:
+                            # Ensure decompression if needed
+                            if dicom_dataset.file_meta.TransferSyntaxUID.is_compressed:
+                                dicom_dataset.decompress()
+                        except Exception:
+                            # Some files may not have file_meta; ignore decompression errors
+                            pass
+
+                        image_array = dicom_dataset.pixel_array
                     else:
                         st.error("DICOM file does not contain pixel data.")
                         return
@@ -177,8 +180,13 @@ def main_app_ui():
                             st.error(f"DICOM file {uploaded_file_widget.name} does not contain pixel data.")
                             return
 
-                        # Directly get the raw stored pixel data for each image
-                        stored_pixel_array = get_raw_pixel_array(ds_temp, auto_trim_footer=auto_trim_footer)
+                        # Directly get the stored pixel data for each image
+                        try:
+                            if ds_temp.file_meta.TransferSyntaxUID.is_compressed:
+                                ds_temp.decompress()
+                        except Exception:
+                            pass
+                        stored_pixel_array = ds_temp.pixel_array
                         img_arrays_stored_values.append(stored_pixel_array)
 
                         # Get pixel spacing

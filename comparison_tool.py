@@ -3,7 +3,7 @@ import numpy as np
 import pydicom
 import os
 
-from dicom_utils import get_raw_pixel_array, _detect_footer_rows
+# Note: dicom_utils removed. Use pydicom.pixel_array (stored values) directly.
 
 def display_array_comparison(arr1, arr2, name1="DICOM-derived", name2="Original RAW"):
     """
@@ -63,20 +63,18 @@ def display_comparison_tool_section(uploaded_files):
     dicom_file = next((f for f in uploaded_files if os.path.splitext(f.name)[1].lower() in ['.dcm', '.dicom']))
     raw_file = next((f for f in uploaded_files if os.path.splitext(f.name)[1].lower() == '.raw'))
 
-    st.sidebar.subheader("DICOM Processing Options for Comparison")
-    auto_trim_footer = st.sidebar.checkbox(
-        "Auto-trim DICOM footer",
-        value=True,
-        key="compare_auto_trim",
-        help="Automatically detect and remove rows containing burned-in text at the bottom of the image."
-    )
+    st.sidebar.info("DICOM stored pixel values will be used for comparison. Footer auto-trim and DICOM->RAW conversion features have been removed.")
 
     try:
         dicom_dataset = pydicom.dcmread(dicom_file)
-        image_array_dicom = get_raw_pixel_array(dicom_dataset, auto_trim_footer=auto_trim_footer)
+        try:
+            if dicom_dataset.file_meta.TransferSyntaxUID.is_compressed:
+                dicom_dataset.decompress()
+        except Exception:
+            pass
+
+        image_array_dicom = dicom_dataset.pixel_array
         st.write(f"**DICOM File:** `{dicom_file.name}`")
-        if auto_trim_footer:
-            st.write(f"&nbsp;&nbsp;&nbsp;- *Auto-trimming enabled*")
         st.write(f"&nbsp;&nbsp;&nbsp;- Dimensions: `{image_array_dicom.shape[1]}x{image_array_dicom.shape[0]}` | Data Type: `{image_array_dicom.dtype}`")
     except Exception as e:
         st.error(f"Error reading DICOM file `{dicom_file.name}`: {e}")

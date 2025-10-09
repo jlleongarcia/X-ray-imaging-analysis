@@ -235,58 +235,20 @@ def main_app_ui():
         # --- DICOM Header Information and Raw Data Option ---
         if dicom_dataset is not None:
             st.subheader("DICOM Image Properties")
-            
-            # Display Image Type
+
+            # Only display whether the image is DERIVED or not; other tag displays were removed.
             image_type = getattr(dicom_dataset, 'ImageType', ['UNKNOWN'])
-            st.write(f"**Image Type:** {', '.join(image_type)}")
-            if 'DERIVED' in image_type:
-                st.warning("This image is 'DERIVED', meaning it has undergone processing (e.g., reconstruction, filtering) from original data.")
-
-            # Display Rescale Slope and Intercept
-            rescale_slope = getattr(dicom_dataset, 'RescaleSlope', 1.0)
-            rescale_intercept = getattr(dicom_dataset, 'RescaleIntercept', 0.0)
-            st.write(f"**Rescale Slope (0028,1053):** {rescale_slope}")
-            st.write(f"**Rescale Intercept (0028,1052):** {rescale_intercept}")
-
-            # Display Pixel Intensity Relationship
-            pixel_intensity_relationship = getattr(dicom_dataset, 'PixelIntensityRelationship', 'UNKNOWN')
-            st.write(f"**Pixel Intensity Relationship (0028,1040):** {pixel_intensity_relationship}")
-
-            # Define and Display Photometric Interpretation
-            photometric_interpretation = getattr(dicom_dataset, 'PhotometricInterpretation', 'MONOCHROME2')
-            st.write(f"**Photometric Interpretation (0028,0004):** {photometric_interpretation}")
-
+            is_derived = 'DERIVED' in image_type
+            is_primary = 'PRIMARY' in image_type or 'ORIGINAL' in image_type
+            if is_derived:
+                st.warning("This image is 'DERIVED' — it has undergone processing from original data.")
+            elif is_primary:
+                st.checkbox("This image appears to be original or suffered minimal processing.")
+            else:
+                st.info("Image processing cannot be checked.")
 
             if is_difference_image:
-                st.success("This is a difference image created from two DICOMs. It was created by reverting each source image to its raw stored values before subtraction.")
-            elif not is_raw_upload: # Only show this for single DICOM files
-                st.markdown("---")
-                st.subheader("Data Processing Options")
-                st.info("By default, analysis is performed on the **raw stored pixel values** from the DICOM file.")
-
-                apply_transformations = st.checkbox(
-                    "Apply DICOM visual transformations (Rescale/Invert)", value=False,
-                    help="If checked, the standard DICOM transformations (Rescale Slope/Intercept and MONOCHROME1 inversion) will be applied to the pixel data before analysis."
-                )
-
-                if apply_transformations:
-                    if 'ModalityLUTSequence' in dicom_dataset:
-                        st.warning("This image contains a 'ModalityLUTSequence'. Applying only the linear Rescale/Intercept may not match the fully processed image.")
-
-                    # Apply transformations
-                    transformed_array = image_array.astype(np.float64)
-                    if photometric_interpretation == 'MONOCHROME1':
-                        bits_stored = getattr(dicom_dataset, 'BitsStored', 16)
-                        max_val = (2**bits_stored) - 1
-                        transformed_array = max_val - transformed_array
-                    
-                    if rescale_slope != 1.0 or rescale_intercept != 0.0:
-                        transformed_array = transformed_array * rescale_slope + rescale_intercept
-                    
-                    image_array = transformed_array
-                    st.success("DICOM visual transformations have been applied to the data.")
-                else:
-                    st.info("Continuing analysis with raw stored pixel values.")
+                st.success("This is a difference image created from two DICOMs using their stored pixel values.")
         else:  # This is a RAW file
             st.info("This is a RAW image file. Analysis will be performed directly on the pixel data using the parameters you provided in the sidebar.")
 
@@ -315,7 +277,7 @@ def main_app_ui():
 
         if len(display_array.shape) == 2:
             img_pil = Image.fromarray(display_array)
-            st.image(img_pil, caption="Image Preview (Normalized for Display)", use_container_width=True)
+            st.image(img_pil, caption="Loaded Image (Normalized for Display)", use_container_width=True)
         else:
             st.warning(f"Image has unexpected shape {image_array.shape}. Cannot display directly.")
         

@@ -55,15 +55,13 @@ def display_comparison_tool_section(uploaded_files):
     is_dicom_upload = '.dcm' in file_extensions or '.dicom' in file_extensions
 
     if not (len(uploaded_files) == 2 and is_raw_upload and is_dicom_upload):
-        st.warning("For comparison, please upload exactly one DICOM file and one RAW file.")
+        st.warning("For comparison, please upload exactly one DICOM file and its corresponding RAW file.")
         return
 
-    st.info("The raw pixel data from the uploaded DICOM and RAW files will be compared.")
+    st.info("Pixel data from the uploaded DICOM and RAW files will be compared.")
 
     dicom_file = next((f for f in uploaded_files if os.path.splitext(f.name)[1].lower() in ['.dcm', '.dicom']))
     raw_file = next((f for f in uploaded_files if os.path.splitext(f.name)[1].lower() == '.raw'))
-
-    st.sidebar.info("DICOM stored pixel values will be used for comparison. Footer auto-trim and DICOM->RAW conversion features have been removed.")
 
     try:
         dicom_dataset = pydicom.dcmread(dicom_file)

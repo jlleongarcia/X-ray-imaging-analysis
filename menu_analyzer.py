@@ -1,9 +1,8 @@
 import streamlit as st
 import pydicom
-from PIL import Image
 import numpy as np
 import os
-import tempfile
+from PIL import Image
 
 # Import functions from your analysis modules
 from uniformity import display_uniformity_analysis_section
@@ -11,6 +10,7 @@ from NPS import display_nps_analysis_section
 from MTF import display_mtf_analysis_section
 from threshold_contrast import display_threshold_contrast_section
 from comparison_tool import display_comparison_tool_section
+from dicomizer import generate_dicom_from_raw
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(page_title="X-ray Image Analysis Toolkit", layout="wide")
@@ -285,7 +285,7 @@ def main_app_ui():
         st.sidebar.markdown("---")
         analysis_type = st.sidebar.selectbox(
             "Choose Analysis Type:",
-            ("Select an analysis...", "Uniformity Analysis", "NPS Analysis", "MTF Analysis", "Contrast Analysis", "Developer: Compare RAW vs DICOM")
+            ("Select an analysis...", "Uniformity Analysis", "NPS Analysis", "MTF Analysis", "Contrast Analysis", "Convert to DICOM", "Developer: Compare RAW vs DICOM")
         )
 
         if analysis_type == "Uniformity Analysis":
@@ -296,6 +296,31 @@ def main_app_ui():
             display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
         elif analysis_type == "Contrast Analysis":
             display_threshold_contrast_section(pixel_spacing_row, pixel_spacing_col)
+        elif analysis_type == "Convert to DICOM":
+            st.subheader("Convert RAW to DICOM")
+            if dicom_dataset is not None:
+                st.error("DICOM conversion is only available for RAW files. Please upload a single RAW file.")
+            else:
+                if pixel_spacing_row is None or pixel_spacing_col is None:
+                    st.error("Pixel spacing is required to convert RAW to DICOM. Please provide valid values in the sidebar.")
+                else:
+                    if st.button("Generate DICOM file"):
+                        try:
+                            dicom_bytes, new_filename = generate_dicom_from_raw(
+                                image_array=image_array,
+                                pixel_spacing_row=pixel_spacing_row,
+                                pixel_spacing_col=pixel_spacing_col,
+                                original_filename=dicom_filename
+                            )
+                            st.success(f"DICOM file generated successfully: **{new_filename}**")
+                            st.download_button(
+                                label="Download DICOM File",
+                                data=dicom_bytes,
+                                file_name=new_filename,
+                                mime="application/dicom"
+                            )
+                        except Exception as e:
+                            st.error(f"Error generating DICOM file: {e}")
         elif analysis_type == "Developer: Compare RAW vs DICOM":
             # This case should not be hit if image_array is loaded, but as a fallback:
             st.error("Comparison tool cannot be run on a single pre-loaded image. Please upload one DICOM and one RAW file together.")

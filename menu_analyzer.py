@@ -116,6 +116,30 @@ def main_app_ui():
                 image_array = np.frombuffer(raw_data, dtype=np_dtype).reshape((height, width))
                 st.sidebar.success("RAW file loaded successfully.")
 
+                # --- "Dicomize" Feature (moved to sidebar for better UX) ---
+                st.sidebar.markdown("---")
+                st.sidebar.subheader("Convert to DICOM")
+                if st.sidebar.button("Generate DICOM file", key="dicomize_button"):
+                    try:
+                        # Call the refactored dicomizer function
+                        dicom_bytes, new_filename = generate_dicom_from_raw(
+                            image_array=image_array,
+                            pixel_spacing_row=pixel_spacing_row,
+                            pixel_spacing_col=pixel_spacing_col,
+                            original_filename=dicom_filename
+                        )
+                        
+                        # Create a download button in the sidebar
+                        st.sidebar.download_button(
+                            label="📥 Download .dcm file",
+                            data=dicom_bytes,
+                            file_name=new_filename,
+                            mime="application/dicom",
+                            key="dicom_download_button"
+                        )
+                        st.sidebar.success(f"Ready to download {new_filename}")
+                    except Exception as e:
+                        st.sidebar.error(f"Failed to create DICOM: {e}")
             except Exception as e:
                 st.error(f"Error processing RAW file: {e}")
                 return
@@ -282,53 +306,28 @@ def main_app_ui():
         else:
             st.warning(f"Image has unexpected shape {image_array.shape}. Cannot display directly.")
         
-        st.sidebar.markdown("---")
-        analysis_type = st.sidebar.selectbox(
-            "Choose Analysis Type:",
-            ("Select an analysis...", "Uniformity Analysis", "NPS Analysis", "MTF Analysis", "Contrast Analysis", "Convert to DICOM", "Developer: Compare RAW vs DICOM")
-        )
+        # --- New Tab-Based UI for Analysis Modules ---
+        st.markdown("---")
+        tab_uniformity, tab_nps, tab_mtf, tab_contrast = st.tabs([
+            "Uniformity Analysis", "NPS Analysis", "MTF Analysis", "Contrast Analysis"
+        ])
 
-        if analysis_type == "Uniformity Analysis":
+        with tab_uniformity:
             display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
-        elif analysis_type == "NPS Analysis":
+
+        with tab_nps:
             display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
-        elif analysis_type == "MTF Analysis":
+
+        with tab_mtf:
             display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
-        elif analysis_type == "Contrast Analysis":
+
+        with tab_contrast:
             display_threshold_contrast_section(pixel_spacing_row, pixel_spacing_col)
-        elif analysis_type == "Convert to DICOM":
-            st.subheader("Convert RAW to DICOM")
-            if dicom_dataset is not None:
-                st.error("DICOM conversion is only available for RAW files. Please upload a single RAW file.")
-            else:
-                if pixel_spacing_row is None or pixel_spacing_col is None:
-                    st.error("Pixel spacing is required to convert RAW to DICOM. Please provide valid values in the sidebar.")
-                else:
-                    if st.button("Generate DICOM file"):
-                        try:
-                            dicom_bytes, new_filename = generate_dicom_from_raw(
-                                image_array=image_array,
-                                pixel_spacing_row=pixel_spacing_row,
-                                pixel_spacing_col=pixel_spacing_col,
-                                original_filename=dicom_filename
-                            )
-                            st.success(f"DICOM file generated successfully: **{new_filename}**")
-                            st.download_button(
-                                label="Download DICOM File",
-                                data=dicom_bytes,
-                                file_name=new_filename,
-                                mime="application/dicom"
-                            )
-                        except Exception as e:
-                            st.error(f"Error generating DICOM file: {e}")
-        elif analysis_type == "Developer: Compare RAW vs DICOM":
-            # This case should not be hit if image_array is loaded, but as a fallback:
-            st.error("Comparison tool cannot be run on a single pre-loaded image. Please upload one DICOM and one RAW file together.")
 
     elif uploaded_files: # This handles the comparison case where image_array is not pre-loaded
-        analysis_type = st.sidebar.selectbox("Choose Analysis Type:", ("Developer: Compare RAW vs DICOM",))
-        if analysis_type == "Developer: Compare RAW vs DICOM":
-            display_comparison_tool_section(uploaded_files)
+        # If files are uploaded but no single image array was created, it's the comparison tool case.
+        st.header("Developer: Compare RAW vs DICOM")
+        display_comparison_tool_section(uploaded_files)
 
     elif not uploaded_files:
         st.info("Please upload one or two DICOM files, or a single RAW file, using the sidebar to begin analysis.")

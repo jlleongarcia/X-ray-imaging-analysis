@@ -22,6 +22,10 @@ def _calculate_uniformity_term(val_i, val_mean):
     abs_diff = np.abs(val_i - val_mean)
     denominator = np.abs(val_mean)
 
+    # Guard against zero or non-finite denominators which would make the term undefined
+    if not np.isfinite(denominator) or denominator == 0:
+        return np.nan
+
     return abs_diff / denominator
 
 def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spacing_col):
@@ -92,10 +96,11 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
         nan_results["central_roi_coords"] = central_roi_coords
         return nan_results
 
-    # --- 2. Calculate MeanPV and MeanSD for the central ROI ---
-    MeanPV_central = np.mean(central_roi_data)
-    MeanSD_central = np.std(central_roi_data)
-    MeanSNR_central = MeanPV_central / MeanSD_central
+    # --- 2. Placeholder central means ---
+    # These will be calculated from the grid of moving-ROI averages below
+    MeanPV_central = np.nan
+    MeanSD_central = np.nan
+    MeanSNR_central = np.nan
 
     # --- 3. Define moving ROI parameters (30mm x 30mm, step 15mm) ---
     roi_size_mm = 30.0
@@ -151,10 +156,15 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
             
             local_pv = np.mean(moving_roi)
             local_sd = np.std(moving_roi)
-            
+
             pv_grid[r_idx, c_idx] = local_pv
             sd_grid[r_idx, c_idx] = local_sd
-            snr_grid[r_idx, c_idx] = local_pv / local_sd
+
+            # Compute SNR robustly: if local_sd is zero or not finite, set SNR to NaN
+            if not np.isfinite(local_sd) or np.isclose(local_sd, 0.0):
+                snr_grid[r_idx, c_idx] = np.nan
+            else:
+                snr_grid[r_idx, c_idx] = local_pv / local_sd
 
     # --- 5. Calculate uniformity metrics ---
     gu_pv_terms = []
@@ -162,17 +172,40 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
     lu_pv_terms = []
     lu_snr_terms = []
 
+    # Compute central means from the moving ROI grids
+    # Use nanmean to ignore invalid/missing ROIs
+    if np.isfinite(pv_grid).any():
+        MeanPV_central = np.nanmean(pv_grid)
+    else:
+        MeanPV_central = np.nan
+
+    if np.isfinite(sd_grid).any():
+        MeanSD_central = np.nanmean(sd_grid)
+    else:
+        MeanSD_central = np.nan
+
+    if np.isfinite(snr_grid).any():
+        MeanSNR_central = np.nanmean(snr_grid)
+    else:
+        MeanSNR_central = np.nan
+
     for r_idx in range(num_rois_y):
         for c_idx in range(num_rois_x):
             pv_i = pv_grid[r_idx, c_idx]
-            snr_i = snr_grid[r_idx, c_idx] # Use calculated SNR_i
+            snr_i = snr_grid[r_idx, c_idx]  # Use calculated SNR_i
 
-            if np.isnan(pv_i) or np.isnan(snr_i): # Check pv_i and snr_i
-                continue # Should not occur if grids populated correctly
+            # Skip ROIs where PV or SNR is undefined
+            if not np.isfinite(pv_i) or not np.isfinite(snr_i):
+                continue
 
-            # Global Uniformity terms
-            gu_pv_terms.append(_calculate_uniformity_term(pv_i, MeanPV_central))
-            gu_snr_terms.append(_calculate_uniformity_term(snr_i, MeanSNR_central))
+            # Global Uniformity terms (append only if finite)
+            gu_pv_term = _calculate_uniformity_term(pv_i, MeanPV_central)
+            if np.isfinite(gu_pv_term):
+                gu_pv_terms.append(gu_pv_term)
+
+            gu_snr_term = _calculate_uniformity_term(snr_i, MeanSNR_central)
+            if np.isfinite(gu_snr_term):
+                gu_snr_terms.append(gu_snr_term)
 
             # Local Uniformity terms (only for ROIs with 8 valid neighbors)
             if 0 < r_idx < num_rois_y - 1 and 0 < c_idx < num_rois_x - 1:
@@ -182,24 +215,28 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
                 for dr_neighbor in [-1, 0, 1]:
                     for dc_neighbor in [-1, 0, 1]:
                         if dr_neighbor == 0 and dc_neighbor == 0:
-                            continue # Skip the central ROI itself
-                        
+                            continue  # Skip the central ROI itself
+
                         nr, nc = r_idx + dr_neighbor, c_idx + dc_neighbor
-                        
-                        if np.isnan(pv_grid[nr, nc]) or np.isnan(snr_grid[nr, nc]):
-                            valid_neighbors = False # A neighbor has NaN data
+
+                        if not np.isfinite(pv_grid[nr, nc]) or not np.isfinite(snr_grid[nr, nc]):
+                            valid_neighbors = False  # A neighbor has invalid data
                             break
                         neighbor_pvs.append(pv_grid[nr, nc])
                         neighbor_snrs.append(snr_grid[nr, nc])
                     if not valid_neighbors:
                         break
-                
-                if valid_neighbors and len(neighbor_pvs) == 8: # Ensure all 8 neighbors were valid and collected
-                    pv_8n = np.mean(neighbor_pvs)
-                    lu_pv_terms.append(_calculate_uniformity_term(pv_i, pv_8n))
 
-                    snr_8n = np.mean(neighbor_snrs) # Mean of neighbor SNRs
-                    lu_snr_terms.append(_calculate_uniformity_term(snr_i, snr_8n))
+                if valid_neighbors and len(neighbor_pvs) == 8:  # Ensure all 8 neighbors were valid and collected
+                    pv_8n = np.mean(neighbor_pvs)
+                    lu_pv_term = _calculate_uniformity_term(pv_i, pv_8n)
+                    if np.isfinite(lu_pv_term):
+                        lu_pv_terms.append(lu_pv_term)
+
+                    snr_8n = np.mean(neighbor_snrs)  # Mean of neighbor SNRs
+                    lu_snr_term = _calculate_uniformity_term(snr_i, snr_8n)
+                    if np.isfinite(lu_snr_term):
+                        lu_snr_terms.append(lu_snr_term)
     
     # Final metrics: Max of the calculated terms.
     # Using np.nanmax to ignore NaNs if any slip through, though robust _calculate_uniformity_term aims to prevent them.

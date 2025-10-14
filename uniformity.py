@@ -76,6 +76,9 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
         "GU_PV": np.nan, "LU_PV": np.nan, "GU_SNR": np.nan, "LU_SNR": np.nan,
         "MeanPV_central": np.nan, "MeanSD_central": np.nan, "MeanSNR_central": np.nan,
         "central_roi_coords": None, "num_moving_rois": 0, "moving_roi_grid_shape": (0,0),
+        "central_roi_percent": 0.0,
+        "num_invalid_rois": 0,
+        "num_valid_rois": 0,
         "moving_roi_pvs": np.array([]).reshape(0,0), 
         "moving_roi_sds": np.array([]).reshape(0,0)
     }
@@ -91,6 +94,11 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
 
     central_roi_data = image_array[start_row_central:end_row_central, start_col_central:end_col_central]
     central_roi_coords = (start_row_central, start_col_central, end_row_central, end_col_central)
+
+    # Percentage of the image area taken by the central ROI
+    central_roi_area = new_H * new_W
+    total_image_area = H_orig * W_orig
+    central_roi_percent = 100.0 * (central_roi_area / total_image_area) if total_image_area > 0 else 0.0
 
     if central_roi_data.size == 0:
         nan_results["central_roi_coords"] = central_roi_coords
@@ -120,7 +128,8 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
         "MeanSNR_central": MeanSNR_central,
         "central_roi_coords": central_roi_coords, "num_moving_rois": 0,
         "moving_roi_grid_shape": (0,0),
-        "moving_roi_pvs": np.array([]).reshape(0,0), "moving_roi_sds": np.array([]).reshape(0,0)
+        "moving_roi_pvs": np.array([]).reshape(0,0), "moving_roi_sds": np.array([]).reshape(0,0),
+        "central_roi_percent": central_roi_percent
     }
 
     if roi_h_px < 1 or roi_w_px < 1:
@@ -144,6 +153,18 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
         # No moving ROIs can be formed
         return {**nan_results, **base_results, "GU_PV": 0.0, "GU_SNR": 0.0}
 
+    # Recalculate central_roi_percent using the actual area covered by the moving-ROI grid
+    # y_coords/x_coords are in coordinates within the central ROI (0-based). The covered
+    # vertical span is from the first y to the last y + roi_h_px. Same for horizontal.
+    try:
+        used_h_px = (y_coords[-1] + roi_h_px) - y_coords[0]
+        used_w_px = (x_coords[-1] + roi_w_px) - x_coords[0]
+        used_area = max(0, used_h_px) * max(0, used_w_px)
+        central_roi_percent = 100.0 * (used_area / total_image_area) if total_image_area > 0 else 0.0
+    except Exception:
+        # Fallback to previously computed central_roi_percent (from central ROI geometry)
+        pass
+
     # Store PV_i and SD_i for each moving ROI in grids
     pv_grid = np.full((num_rois_y, num_rois_x), np.nan, dtype=float)
     sd_grid = np.full((num_rois_y, num_rois_x), np.nan, dtype=float)
@@ -165,6 +186,11 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
                 snr_grid[r_idx, c_idx] = np.nan
             else:
                 snr_grid[r_idx, c_idx] = local_pv / local_sd
+
+    # Count invalid/valid ROIs (invalid if PV or SNR is not finite)
+    total_rois = num_rois_y * num_rois_x
+    num_invalid_rois = int(np.count_nonzero(~np.isfinite(pv_grid) | ~np.isfinite(snr_grid)))
+    num_valid_rois = int(total_rois - num_invalid_rois)
 
     # --- 5. Calculate uniformity metrics ---
     gu_pv_terms = []
@@ -255,6 +281,9 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
         "MeanSNR_central": abs(MeanSNR_central),
         "central_roi_coords": central_roi_coords,
         "num_moving_rois": num_rois_y * num_rois_x,
+        "central_roi_percent": central_roi_percent,
+        "num_invalid_rois": num_invalid_rois,
+        "num_valid_rois": num_valid_rois,
         "moving_roi_grid_shape": (num_rois_y, num_rois_x)
     }
 
@@ -282,9 +311,13 @@ def display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_sp
                     st.subheader("Calculated Uniformity Metrics")
                     col1, col2 = st.columns(2)
                     with col1:
+                        st.metric("Size of central ROI", f"{results['central_roi_percent']:.2f}% of image area")
+                        st.metric("Moving ROI grid (rows x cols)", f"{results['moving_roi_grid_shape'][0]} x {results['moving_roi_grid_shape'][1]}")
                         st.metric("Global Uniformity (PV)", f"{results['GU_PV']:.2f}%")
                         st.metric("Local Uniformity (PV)", f"{results['LU_PV']:.2f}%")
                     with col2:
+                        st.metric("Number of moving ROIs", f"{results['num_moving_rois']:.0f}")
+                        st.metric("Invalid ROIs (PV or SNR NaN)", f"{results['num_invalid_rois']:.0f}")
                         st.metric("Global Uniformity (SNR)", f"{results['GU_SNR']:.2f}%")
                         st.metric("Local Uniformity (SNR)", f"{results['LU_SNR']:.2f}%")
 

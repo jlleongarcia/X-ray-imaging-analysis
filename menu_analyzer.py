@@ -54,12 +54,17 @@ def main_app_ui():
         is_comparison_candidate = is_raw_upload and is_dicom_upload
 
         if is_raw_upload and not is_dicom_upload:
-            if len(uploaded_files) > 1:
-                st.error("Analysis of multiple RAW files is not yet supported. Please upload a single .raw file.")
+            # Allow uploading multiple RAW files. Provide a selector to choose which RAW to analyze.
+            raw_files = [f for f in uploaded_files if os.path.splitext(f.name)[1].lower() == '.raw']
+            if not raw_files:
+                st.error("No RAW files found in upload.")
                 return
-            
+
+            # Default to the first RAW file if multiple are uploaded
+            selected_raw = raw_files[0]
+
             # --- RAW File Processing ---
-            raw_file = uploaded_files[0]
+            raw_file = selected_raw
             dicom_filename = raw_file.name
 
             st.sidebar.subheader("RAW Image Parameters")
@@ -144,109 +149,11 @@ def main_app_ui():
                 st.error(f"Error processing RAW file: {e}")
                 return
 
-        elif is_dicom_upload and not is_raw_upload:
-            st.sidebar.subheader("DICOM Processing Options")
-            # Note: DICOM-to-RAW conversion feature removed. We will use the stored pixel data
-            # available in the DICOM (`pixel_array`) for analysis. Any footer trimming logic
-            # has been removed.
-
-            if len(uploaded_files) == 1:
-                uploaded_file_widget = uploaded_files[0]
-                dicom_filename = uploaded_file_widget.name
-                try:
-                    dicom_dataset = pydicom.dcmread(uploaded_file_widget)
-                    if 'PixelData' in dicom_dataset:
-                        # Use pydicom's pixel_array (the stored/stored values) for analysis.
-                        # Note: we intentionally do NOT attempt to recreate a RAW file or
-                        # infer processing steps beyond the final stored pixel values.
-                        try:
-                            # Ensure decompression if needed
-                            if dicom_dataset.file_meta.TransferSyntaxUID.is_compressed:
-                                dicom_dataset.decompress()
-                        except Exception:
-                            # Some files may not have file_meta; ignore decompression errors
-                            pass
-
-                        image_array = dicom_dataset.pixel_array
-                    else:
-                        st.error("DICOM file does not contain pixel data.")
-                        return
-                    
-                    if 'PixelSpacing' in dicom_dataset:
-                        pixel_spacing = dicom_dataset.PixelSpacing
-                        if len(pixel_spacing) == 2:
-                            pixel_spacing_row = float(pixel_spacing[0])
-                            pixel_spacing_col = float(pixel_spacing[1])
-                        else:
-                            st.warning(f"Pixel Spacing tag (0028,0030) has unexpected format: {pixel_spacing}.")
-                    else:
-                        st.warning("Pixel Spacing tag (0028,0030) not found in DICOM header.")
-
-                except Exception as e:
-                    st.error(f"Error reading DICOM file: {e}")
-                    return
-
-            elif len(uploaded_files) == 2:
-                is_difference_image = True
-                st.info("Two DICOM files uploaded. Each image will be reverted to its raw 'stored values' before subtraction to create the difference image.")
-                img_arrays_stored_values = []
-                pixel_spacings = []
-                filenames = []
-                dicom_dataset = None
-
-                for i, uploaded_file_widget in enumerate(uploaded_files):
-                    filenames.append(uploaded_file_widget.name)
-                    try:
-                        ds_temp = pydicom.dcmread(uploaded_file_widget, force=True)
-                        if i == 0:
-                            dicom_dataset = ds_temp  # Store the first dataset object
-                        if 'PixelData' not in ds_temp:
-                            st.error(f"DICOM file {uploaded_file_widget.name} does not contain pixel data.")
-                            return
-
-                        # Directly get the stored pixel data for each image
-                        try:
-                            if ds_temp.file_meta.TransferSyntaxUID.is_compressed:
-                                ds_temp.decompress()
-                        except Exception:
-                            pass
-                        stored_pixel_array = ds_temp.pixel_array
-                        img_arrays_stored_values.append(stored_pixel_array)
-
-                        # Get pixel spacing
-                        if 'PixelSpacing' in ds_temp and len(ds_temp.PixelSpacing) == 2:
-                            ps = ds_temp.PixelSpacing
-                            pixel_spacings.append((float(ps[0]), float(ps[1])))
-                        else:
-                            st.warning(f"Pixel Spacing not found or invalid in {uploaded_file_widget.name}.")
-                            pixel_spacings.append((None, None))
-
-                    except Exception as e:
-                        st.error(f"Error reading DICOM file {uploaded_file_widget.name}: {e}")
-                        return
-
-                if len(img_arrays_stored_values) == 2:
-                    if img_arrays_stored_values[0].shape != img_arrays_stored_values[1].shape:
-                        st.error(f"Image dimensions mismatch: {filenames[0]} ({img_arrays_stored_values[0].shape}) vs {filenames[1]} ({img_arrays_stored_values[1].shape}). Cannot calculate difference.")
-                        return
-                    if pixel_spacings[0] != pixel_spacings[1] and pixel_spacings[0] is not None and pixel_spacings[1] is not None:
-                        st.warning(f"Pixel spacings mismatch: {filenames[0]} ({pixel_spacings[0]}) vs {filenames[1]} ({pixel_spacings[1]}). Using spacing from the first image.")
-
-                    # Calculate difference image from stored values
-                    image_array = img_arrays_stored_values[0] - img_arrays_stored_values[1]
-                    dicom_filename = f"Difference of {filenames[0]} and {filenames[1]}"
-                    
-                    # Use pixel spacing from the first image
-                    if pixel_spacings[0][0] is not None:
-                        pixel_spacing_row, pixel_spacing_col = pixel_spacings[0]
-                    else:
-                        st.warning("Pixel spacing not available for difference image. NPS will use cycles/pixel.")
-                else:
-                    st.warning("Could not process the two DICOM files.")
-                    return
-            else:
-                st.warning("Please upload either one or two DICOM files for analysis.")
-                return
+        elif is_dicom_upload:
+            # Any DICOM upload routes to the comparison tool for RAW vs DICOM comparison.
+            st.header("Developer: Compare RAW vs DICOM")
+            display_comparison_tool_section(uploaded_files)
+            return
 
     # --- Main Area ---
     if image_array is not None: # Standard analysis path

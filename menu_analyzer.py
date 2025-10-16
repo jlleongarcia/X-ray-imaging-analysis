@@ -11,6 +11,7 @@ from MTF import display_mtf_analysis_section
 from threshold_contrast import display_threshold_contrast_section
 from comparison_tool import display_comparison_tool_section
 from dicomizer import generate_dicom_from_raw
+from detector_conversion import display_detector_conversion_section
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(page_title="X-ray Image Analysis Toolkit", layout="wide")
@@ -215,9 +216,21 @@ def main_app_ui():
         
         # --- New Tab-Based UI for Analysis Modules ---
         st.markdown("---")
-        tab_uniformity, tab_nps, tab_mtf, tab_contrast = st.tabs([
-            "Uniformity Analysis", "NPS Analysis", "MTF Analysis", "Contrast Analysis"
+        tab_detector, tab_uniformity, tab_nps, tab_mtf, tab_contrast = st.tabs([
+            "Detector Conversion", "Uniformity Analysis", "NPS Analysis", "MTF Analysis", "Contrast Analysis"
         ])
+
+        with tab_detector:
+            # Prefer the sidebar-uploaded RAW files if available; pass them to the detector UI so re-upload is not needed
+            raw_sidebar_files = None
+            if uploaded_files:
+                # Filter only .raw files from the sidebar upload list
+                raw_sidebar_files = [f for f in uploaded_files if os.path.splitext(f.name)[1].lower() == '.raw'] or None
+
+            detector_results = display_detector_conversion_section(uploaded_files=raw_sidebar_files)
+            # If the detector module returned structured output, persist it to session state
+            if detector_results is not None:
+                st.session_state['detector_conv'] = detector_results
 
         with tab_uniformity:
             display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
@@ -237,7 +250,7 @@ def main_app_ui():
         display_comparison_tool_section(uploaded_files)
 
     elif not uploaded_files:
-        st.info("Please upload one or two DICOM files, or a single RAW file, using the sidebar to begin analysis.")
+        st.info("Please upload RAW files in the sidebar to analyze detector response curve.")
 
     # --- Add a clear session state button for debugging ---
     st.sidebar.markdown("---")

@@ -134,7 +134,7 @@ def display_detector_conversion_section(uploaded_files=None):
 
     # Fit selection
     st.markdown("---")
-    fit_method = st.selectbox("Fit method", options=['linear', 'log', 'poly'], index=0)
+    fit_method = st.selectbox("Fit method (applies to Detector Response Curve: MPV vs Kerma)", options=['linear', 'log', 'poly'], index=0, help="Select the fitting method for the Detector Response Curve (MPV vs Kerma). EI vs Kerma uses a linear fit.")
     poly_degree = 2
     if fit_method == 'poly':
         poly_degree = st.selectbox("Polynomial degree", options=[2, 3], index=0)
@@ -148,7 +148,7 @@ def display_detector_conversion_section(uploaded_files=None):
         st.error(f"Fit failed: {e}")
         return None
 
-    st.write("### Fit results")
+    st.write("### Detector Response Curve")
     st.write(formula)
     st.write(f"R^2 = {r2:.4f}")
 
@@ -182,26 +182,18 @@ def display_detector_conversion_section(uploaded_files=None):
         st.error("EI values are not numeric or missing for one or more files; cannot fit EI vs Kerma.")
         return None
 
+    # EI vs Kerma uses a linear fit regardless of the MPV fit method
     try:
-        fit_vals_ei, formula_ei, r2_ei, p_ei = _fit_mpv_vs_kerma(kerma_vals, ei_vals, fit_method, poly_degree)
+        fit_vals_ei, formula_ei, r2_ei, p_ei = _fit_mpv_vs_kerma(kerma_vals, ei_vals, 'linear', 1)
     except Exception as e:
         st.error(f"EI fit failed: {e}")
         return None
 
-    st.write("### EI fit results")
+    st.write("### Exposition Index (EI) vs Kerma Fit")
     st.write(formula_ei)
     st.write(f"R^2 = {r2_ei:.4f}")
 
-    # Plot EI fit
-    fig2, ax2 = plt.subplots()
-    ax2.scatter(kerma_vals, ei_vals, label='data')
-    ax2.plot(kerma_vals, fit_vals_ei, color='C2', label='fit')
-    ax2.set_xlabel('Kerma')
-    ax2.set_ylabel('Exposition Index (EI)')
-    ax2.legend()
-    st.pyplot(fig2)
-
-    # Compute deviations for EI
+    # Compute deviations for EI (do this before plotting so we can display the max deviation above the graph)
     fit_vals_arr_ei = np.array(fit_vals_ei, dtype=float)
     ei_vals_arr = np.array(ei_vals, dtype=float)
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -211,6 +203,15 @@ def display_detector_conversion_section(uploaded_files=None):
     max_deviation_pct_ei = float(max(abs_devs_ei)) if abs_devs_ei else None
     if max_deviation_pct_ei is not None:
         st.write(f"Maximum absolute deviation from EI fit: {max_deviation_pct_ei:.3f}%")
+
+    # Plot EI fit
+    fig2, ax2 = plt.subplots()
+    ax2.scatter(kerma_vals, ei_vals, label='data')
+    ax2.plot(kerma_vals, fit_vals_ei, color='C2', label='fit')
+    ax2.set_xlabel('Kerma')
+    ax2.set_ylabel('Exposition Index (EI)')
+    ax2.legend()
+    st.pyplot(fig2)
 
     # Offer CSV download of results
     import csv

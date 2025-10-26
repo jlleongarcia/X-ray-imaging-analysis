@@ -9,7 +9,7 @@ services:
     container_name: X-ray-imaging-analysis
     restart: unless-stopped
     ports:
-    - "127.0.0.1:8502:8502"
+    - "8502:8502"
     # Define the healthcheck to ensure the container is truly ready for the tunnel
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8502"]

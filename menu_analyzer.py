@@ -22,19 +22,25 @@ def main_app_ui():
         st.session_state['mtf_data'] = None
     if 'nnps_data' not in st.session_state:
         st.session_state['nnps_data'] = None
+    # Ensure detector conversion cache key exists (stores predict_mpv and fit metadata)
+    if 'detector_conversion' not in st.session_state:
+        st.session_state['detector_conversion'] = None
 
     # Always display session state status in the sidebar for debugging
     st.sidebar.markdown("---")
     st.sidebar.subheader("Saved Analysis Data Status")
     st.sidebar.write(f"MTF Data: {'Loaded ✅' if st.session_state['mtf_data'] is not None else 'Missing ⚠️'}")
     st.sidebar.write(f"NNPS Data: {'Loaded ✅' if st.session_state['nnps_data'] is not None else 'Missing ⚠️'}")
+    _dc = st.session_state['detector_conversion']
+    _dc_loaded = isinstance(_dc, dict) and (_dc.get('predict_mpv') is not None)
+    st.sidebar.write(f"Detector Conversion Fn: {'Loaded ✅' if _dc_loaded else 'Missing ⚠️'}")
     st.sidebar.markdown("---")
 
     # --- File Upload and Initial Image Display ---
     # Use a key for the file uploader to manage its state explicitly
     uploaded_files = st.sidebar.file_uploader(
-        "Choose DICOM (.dcm) or RAW (.raw) file(s)",
-        type=["dcm", "dicom", "raw"],
+        "Choose DICOM (.dcm) or RAW/STD (.raw/.std) file(s)",
+        type=["dcm", "dicom", "raw", "std"],
         accept_multiple_files=True
     )
 
@@ -48,17 +54,18 @@ def main_app_ui():
     if uploaded_files:
         # Determine file types
         file_extensions = {os.path.splitext(f.name)[1].lower() for f in uploaded_files}
-        is_raw_upload = '.raw' in file_extensions
+        # Treat .std as RAW-like for reading/analysis
+        is_raw_upload = ('.raw' in file_extensions) or ('.std' in file_extensions)
         is_dicom_upload = '.dcm' in file_extensions or '.dicom' in file_extensions
 
         # The comparison tool handles mixed files. For all other analyses, we only allow one type.
         is_comparison_candidate = is_raw_upload and is_dicom_upload
 
         if is_raw_upload and not is_dicom_upload:
-            # Allow uploading multiple RAW files. Provide a selector to choose which RAW to analyze.
-            raw_files = [f for f in uploaded_files if os.path.splitext(f.name)[1].lower() == '.raw']
+            # Allow uploading multiple RAW/STD files. Provide a selector to choose which one to analyze.
+            raw_files = [f for f in uploaded_files if os.path.splitext(f.name)[1].lower() in ('.raw', '.std')]
             if not raw_files:
-                st.error("No RAW files found in upload.")
+                st.error("No RAW/STD files found in upload.")
                 return
 
             # Default to the first RAW file if multiple are uploaded
@@ -68,8 +75,8 @@ def main_app_ui():
             raw_file = selected_raw
             dicom_filename = raw_file.name
 
-            st.sidebar.subheader("RAW Image Parameters")
-            st.sidebar.info("Please provide the details for your RAW image file.")
+            st.sidebar.subheader("RAW/STD Image Parameters")
+            st.sidebar.info("Please provide the details for your RAW or STD image file.")
 
             dtype_map = {
                 '16-bit Unsigned Integer': np.uint16,
@@ -181,8 +188,8 @@ def main_app_ui():
 
             if is_difference_image:
                 st.success("This is a difference image created from two DICOMs using their stored pixel values.")
-        else:  # This is a RAW file
-            st.info("This is a RAW image file. Analysis will be performed directly on the pixel data using the parameters you provided in the sidebar.")
+        else:  # This is a RAW/STD file
+            st.info("This is a RAW/STD image file. Analysis will be performed directly on the pixel data using the parameters you provided in the sidebar.")
 
         # Display original image
         display_array = image_array.copy()  # Work on a copy to avoid modifying the array passed to analysis
@@ -221,11 +228,11 @@ def main_app_ui():
         ])
 
         with tab_detector:
-            # Prefer the sidebar-uploaded RAW files if available; pass them to the detector UI so re-upload is not needed
+            # Prefer the sidebar-uploaded RAW/STD files if available; pass them to the detector UI so re-upload is not needed
             raw_sidebar_files = None
             if uploaded_files:
-                # Filter only .raw files from the sidebar upload list
-                raw_sidebar_files = [f for f in uploaded_files if os.path.splitext(f.name)[1].lower() == '.raw'] or None
+                # Filter only .raw/.std files from the sidebar upload list
+                raw_sidebar_files = [f for f in uploaded_files if os.path.splitext(f.name)[1].lower() in ('.raw', '.std')] or None
 
             detector_results = display_detector_conversion_section(uploaded_files=raw_sidebar_files)
             # If the detector module returned structured output, persist it to session state
@@ -257,6 +264,9 @@ def main_app_ui():
     if st.sidebar.button("Clear All Saved Analysis Data"):
         st.session_state['mtf_data'] = None
         st.session_state['nnps_data'] = None
+        st.session_state['detector_conversion'] = None
+        # Also clear structured detector results if present
+        st.session_state['detector_conv'] = None
         st.success("All saved analysis data cleared!")
         st.rerun() # Rerun to reflect the cleared state
 

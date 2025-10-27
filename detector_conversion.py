@@ -135,6 +135,8 @@ def display_detector_conversion_section(uploaded_files=None):
                 "ei": float(ei_val),
                 "mpv": float(mpv),
                 "sd": float(sd),
+                # Store ROI pixels for later inverse-conversion based analyses
+                "roi": roi,
             })
             st.write(f"MPV: {mpv:.3f}, SD: {sd:.3f}")
             # Proceed to next file; fit UI is shown after processing all files
@@ -314,6 +316,122 @@ def display_detector_conversion_section(uploaded_files=None):
             st.pyplot(fig2)
         except Exception as e:
             st.warning(f"Could not display cached EI fit: {e}")
+
+    # --- Noise: SD^2 vs Kerma (uses inverse conversion) ---
+    st.write("### Noise: SD^2 vs Kerma")
+    st.caption("Compute SD on linearized (kerma-domain) ROI, square it (SD^2), then fit SD^2 = a*k^2 + b*k + c.")
+
+    def _build_kerma_from_m_fn(conv: dict):
+        method = conv.get("method")
+        coeffs = np.array(conv.get("coeffs"), dtype=float)
+        if method == 'linear':
+            # m = a*k + b -> k = (m - b)/a
+            a, b = coeffs
+            if a == 0:
+                raise ValueError("Inverse conversion undefined for a=0 in linear fit")
+            return lambda m: (np.asarray(m, dtype=float) - b) / a
+        elif method == 'log':
+            # m = a*ln(k) + b -> k = exp((m - b)/a)
+            a, b = coeffs
+            if a == 0:
+                raise ValueError("Inverse conversion undefined for a=0 in log fit")
+            def f(m):
+                m = np.asarray(m, dtype=float)
+                with np.errstate(over='ignore', invalid='ignore'):
+                    return np.exp((m - b) / a)
+            return f
+        else:
+            # Inversion for polynomial fits is non-trivial; not implemented yet.
+            raise NotImplementedError("Inverse conversion for 'poly' fit is not supported yet. Please use linear or log.")
+
+    if st.button("Run fit: SD^2 vs Kerma", key="run_fit_sd2"):
+        conv = st.session_state.get("detector_conversion")
+        if not isinstance(conv, dict) or conv.get("coeffs") is None:
+            st.error("Run the Detector Response Curve fit first to obtain the conversion function.")
+        else:
+            try:
+                inv_fn = _build_kerma_from_m_fn(conv)
+                sd2_vals = []
+                for rec in results["files"]:
+                    roi_px = rec.get("roi")
+                    if roi_px is None:
+                        st.error(f"Missing ROI data for {rec['filename']}")
+                        return None
+                    kerma_img = inv_fn(roi_px)
+                    # Clean any invalids
+                    kerma_img = np.asarray(kerma_img, dtype=float)
+                    kerma_img[~np.isfinite(kerma_img)] = np.nan
+                    # SD over finite values
+                    sd_lin = float(np.nanstd(kerma_img))
+                    k_in = float(rec["kerma"]) if rec.get("kerma") is not None else np.nan
+                    sd2 = (sd_lin**2)
+                    sd2_vals.append(sd2)
+
+                # Remove NaNs for fitting; fit SD^2
+                k_arr = np.array([float(x) for x in kerma_vals], dtype=float)
+                y_arr = np.array(sd2_vals, dtype=float)
+                mask = np.isfinite(k_arr) & np.isfinite(y_arr)
+                if mask.sum() < 3:
+                    st.error("Not enough valid points to fit a quadratic (need at least 3).")
+                else:
+                    p_sd = np.polyfit(k_arr[mask], y_arr[mask], 2)  # [a, b, c] for SD^2
+                    y_fit = np.polyval(p_sd, k_arr)
+                    a_, b_, c_ = p_sd
+                    formula_sd = f"SD^2 = {a_:.4g}*k^2 + {b_:.4g}*k + {c_:.4g}"
+                    # R^2
+                    ss_res = np.nansum((y_arr - y_fit) ** 2)
+                    ss_tot = np.nansum((y_arr - np.nanmean(y_arr)) ** 2)
+                    r2_sd = 1.0 - ss_res / ss_tot if ss_tot != 0 else np.nan
+
+                    # Cache results
+                    st.session_state["detector_sd2_fit"] = {
+                        "coeffs": p_sd.tolist(),
+                        "formula": formula_sd,
+                        "r2": float(r2_sd) if not np.isnan(r2_sd) else None,
+                        "sd2": [None if not np.isfinite(v) else float(v) for v in y_arr],
+                    }
+            except NotImplementedError as nie:
+                st.error(str(nie))
+            except Exception as e:
+                st.error(f"SD_norm fit failed: {e}")
+
+    # Render cached SD^2 fit (if available)
+    cached_sd = st.session_state.get("detector_sd2_fit")
+    if isinstance(cached_sd, dict) and cached_sd.get("coeffs") is not None:
+        st.write(cached_sd.get("formula", ""))
+        r2_sd = cached_sd.get("r2")
+        if r2_sd is not None:
+            st.write(f"R^2 = {r2_sd:.4f}")
+
+        # Recompute SD_norm scatter with current data for visualization
+        conv = st.session_state.get("detector_conversion")
+        try:
+            inv_fn = _build_kerma_from_m_fn(conv)
+            sd2_vals = []
+            for rec in results["files"]:
+                kerma_img = inv_fn(rec.get("roi"))
+                kerma_img = np.asarray(kerma_img, dtype=float)
+                kerma_img[~np.isfinite(kerma_img)] = np.nan
+                sd_lin = float(np.nanstd(kerma_img))
+                sd2 = (sd_lin**2)
+                sd2_vals.append(sd2)
+
+            k_arr = np.array([float(x) for x in kerma_vals], dtype=float)
+            y_arr = np.array(sd2_vals, dtype=float)
+            coeffs_sd = np.array(cached_sd.get("coeffs"), dtype=float)
+            y_fit = np.polyval(coeffs_sd, k_arr)
+
+            fig3, ax3 = plt.subplots()
+            ax3.scatter(k_arr, y_arr, label='SD^2 data')
+            # Sort kerma for smooth curve
+            order = np.argsort(k_arr)
+            ax3.plot(k_arr[order], y_fit[order], color='C3', label='quadratic fit')
+            ax3.set_xlabel('Kerma')
+            ax3.set_ylabel('SD^2')
+            ax3.legend()
+            st.pyplot(fig3)
+        except Exception as e:
+            st.warning(f"Could not display cached SD_norm fit: {e}")
 
     # Offer CSV download of results
     import csv

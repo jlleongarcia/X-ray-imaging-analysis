@@ -383,12 +383,44 @@ def display_detector_conversion_section(uploaded_files=None):
                     ss_tot = np.nansum((y_arr - np.nanmean(y_arr)) ** 2)
                     r2_sd = 1.0 - ss_res / ss_tot if ss_tot != 0 else np.nan
 
+                    # Dominance interval for middle term b*k over both a*k^2 and c
+                    # Only compute if all coefficients are positive as requested
+                    abc_positive = (a_ > 0) and (b_ > 0) and (c_ > 0)
+                    k_min = None  # where b*k > c -> k > c/b
+                    k_max = None  # where b*k > a*k^2 -> k < b/a
+                    interval_exists = None
+                    interval_degenerate = None
+                    if abc_positive:
+                        # Compute bounds
+                        k_min = c_ / b_ if b_ != 0 else None
+                        k_max = b_ / a_ if a_ != 0 else None
+                        # Check if non-empty interval (c/b, b/a) exists: b^2 > a*c
+                        if (k_min is not None) and (k_max is not None):
+                            delta = (b_**2) - (a_*c_)
+                            if np.isclose(delta, 0.0, rtol=1e-10, atol=1e-12):
+                                interval_exists = False
+                                interval_degenerate = True
+                            elif delta > 0:
+                                interval_exists = True
+                                interval_degenerate = False
+                            else:
+                                interval_exists = False
+                                interval_degenerate = False
+                    # For backward compatibility keep upper_limit_k == k_max
+                    upper_limit_k = k_max
+
                     # Cache results
                     st.session_state["detector_sd2_fit"] = {
                         "coeffs": p_sd.tolist(),
                         "formula": formula_sd,
                         "r2": float(r2_sd) if not np.isnan(r2_sd) else None,
                         "sd2": [None if not np.isfinite(v) else float(v) for v in y_arr],
+                        "abc_positive": bool(abc_positive),
+                        "upper_limit_k": (float(upper_limit_k) if upper_limit_k is not None else None),
+                        "k_min": (float(k_min) if k_min is not None else None),
+                        "k_max": (float(k_max) if k_max is not None else None),
+                        "dominance_interval_exists": (bool(interval_exists) if interval_exists is not None else None),
+                        "dominance_interval_degenerate": (bool(interval_degenerate) if interval_degenerate is not None else None),
                     }
             except NotImplementedError as nie:
                 st.error(str(nie))
@@ -402,6 +434,27 @@ def display_detector_conversion_section(uploaded_files=None):
         r2_sd = cached_sd.get("r2")
         if r2_sd is not None:
             st.write(f"R^2 = {r2_sd:.4f}")
+
+        # Retrieve dominance interval details from cache
+        abc_positive = cached_sd.get("abc_positive", None)
+        k_min = cached_sd.get("k_min", None)
+        k_max = cached_sd.get("k_max", None)
+        interval_exists = cached_sd.get("dominance_interval_exists", None)
+        interval_degenerate = cached_sd.get("dominance_interval_degenerate", None)
+
+        # Immediate user feedback for the dominance interval
+        if not abc_positive:
+            st.info("Coefficients a, b, and c are not all positive; dominance interval of the quantum noise is not computed.")
+        else:
+            if (k_min is not None and k_max is not None and k_min > 0 and k_max > 0):
+                if interval_exists:
+                    st.write(f"Quantum noise dominance interval (over both structural and electronic noise): (k_min, k_max) = ({k_min:.4g}, {k_max:.4g}) μGy")
+                elif interval_degenerate:
+                    st.info(f"No dominance interval (degenerate): k_min = k_max = {k_min:.4g} μGy (b^2 ≈ a*c)")
+                else:
+                    st.info("No kerma value where the quantum noise term dominates both other terms (b^2 ≤ a*c).")
+            else:
+                st.info("Dominance interval bounds could not be determined (non-positive or undefined).")
 
         # Recompute SD_norm scatter with current data for visualization
         conv = st.session_state.get("detector_conversion")

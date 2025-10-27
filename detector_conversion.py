@@ -10,7 +10,7 @@ Detector conversion feature
 - User enters kerma value (mGy or any unit) per file via sidebar inputs
 - For each file: extract a 100x100 central ROI, compute Mean Pixel Value (MPV) and SD
 - Fit MPV(kerma) using one of: linear, logarithmic (MPV vs log(kerma)), polynomial (degree 2/3)
-- Show fit parameters, R^2 and plot with data points and fit curve
+- Show fit parameters, R² and plot with data points and fit curve
 """
 
 
@@ -58,7 +58,7 @@ def _fit_mpv_vs_kerma(kerma_vals, mpv_vals, method, poly_degree=2):
     else:
         raise ValueError("Unknown fit method")
 
-    # R^2
+    # R²
     ss_res = np.sum((m - fit_vals) ** 2)
     ss_tot = np.sum((m - np.mean(m)) ** 2)
     r2 = 1.0 - ss_res / ss_tot if ss_tot != 0 else np.nan
@@ -191,6 +191,27 @@ def display_detector_conversion_section(uploaded_files=None):
         try:
             fit_vals, formula, r2, p = _fit_mpv_vs_kerma(kerma_vals, mpv_vals, fit_method, poly_degree)
             # Cache conversion function for later use
+            # Build LaTeX formula string for display
+            def _latex_formula_detector(method, coeffs, poly_deg=2):
+                coeffs = np.array(coeffs, dtype=float)
+                if method == 'linear':
+                    a, b = coeffs
+                    return rf"m = {a:.4g}\\,k + {b:.4g}"
+                elif method == 'log':
+                    a, b = coeffs
+                    return rf"m = {a:.4g}\\,\\ln(k) + {b:.4g}"
+                else:
+                    terms = []
+                    deg = len(coeffs) - 1
+                    for i, c in enumerate(coeffs):
+                        pwr = deg - i
+                        if pwr == 0:
+                            terms.append(f"{c:.4g}")
+                        elif pwr == 1:
+                            terms.append(f"{c:.4g}\\,k")
+                        else:
+                            terms.append(f"{c:.4g}\\,k^{{{pwr}}}")
+                    return "m = " + " + ".join(terms)
             def _build_mpv_from_kerma_fn(method, coeffs, poly_deg=2):
                 coeffs = np.array(coeffs, dtype=float)
                 if method == 'linear':
@@ -214,6 +235,7 @@ def display_detector_conversion_section(uploaded_files=None):
                 "coeffs": np.array(p).tolist() if p is not None else None,
                 "poly_degree": int(poly_degree) if fit_method == 'poly' else None,
                 "formula": formula,
+                "latex_formula": _latex_formula_detector(fit_method, p, poly_degree) if p is not None else None,
                 "r2": float(r2) if (r2 is not None and not np.isnan(r2)) else None,
                 "predict_mpv": mpv_from_kerma_fn,
             }
@@ -224,10 +246,13 @@ def display_detector_conversion_section(uploaded_files=None):
     cached = st.session_state.get("detector_conversion")
     if isinstance(cached, dict) and cached.get("coeffs") is not None:
         st.caption("Fitted using: " + cached.get("method", "?"))
-        st.write(cached.get("formula", ""))
+        if cached.get("latex_formula"):
+            st.latex(cached.get("latex_formula"))
+        else:
+            st.write(cached.get("formula", ""))
         r2_val = cached.get("r2")
         if r2_val is not None:
-            st.write(f"R^2 = {r2_val:.4f}")
+            st.write(f"R² = {r2_val:.4f}")
 
         # Predictions and deviations
         try:
@@ -259,7 +284,7 @@ def display_detector_conversion_section(uploaded_files=None):
             fig, ax = plt.subplots()
             ax.scatter(kerma_vals, mpv_vals, label='data')
             ax.plot(kerma_vals, fit_vals_arr, color='C1', label='fit')
-            ax.set_xlabel('Kerma')
+            ax.set_xlabel(r"$k$")
             ax.set_ylabel('MPV')
             ax.legend()
             st.pyplot(fig)
@@ -279,6 +304,7 @@ def display_detector_conversion_section(uploaded_files=None):
                 st.session_state["detector_ei_fit"] = {
                     "coeffs": np.array(p_ei).tolist() if p_ei is not None else None,
                     "formula": formula_ei,
+                    "latex_formula": (lambda c: rf"EI = {c[0]:.4g}\\,k + {c[1]:.4g}")(np.array(p_ei, dtype=float)) if p_ei is not None else None,
                     "r2": float(r2_ei) if (r2_ei is not None and not np.isnan(r2_ei)) else None,
                 }
             except Exception as e:
@@ -288,10 +314,13 @@ def display_detector_conversion_section(uploaded_files=None):
     cached_ei = st.session_state.get("detector_ei_fit")
     if isinstance(cached_ei, dict) and cached_ei.get("coeffs") is not None:
         st.caption("Fitted using: linear")
-        st.write(cached_ei.get("formula", ""))
+        if cached_ei.get("latex_formula"):
+            st.latex(cached_ei.get("latex_formula"))
+        else:
+            st.write(cached_ei.get("formula", ""))
         r2_val_ei = cached_ei.get("r2")
         if r2_val_ei is not None:
-            st.write(f"R^2 = {r2_val_ei:.4f}")
+            st.write(f"R² = {r2_val_ei:.4f}")
 
         try:
             coeffs_ei = np.array(cached_ei.get("coeffs"), dtype=float)
@@ -310,16 +339,16 @@ def display_detector_conversion_section(uploaded_files=None):
             fig2, ax2 = plt.subplots()
             ax2.scatter(kerma_vals, ei_vals, label='data')
             ax2.plot(kerma_vals, fit_vals_arr_ei, color='C2', label='fit')
-            ax2.set_xlabel('Kerma')
+            ax2.set_xlabel(r"$k$")
             ax2.set_ylabel('Exposition Index (EI)')
             ax2.legend()
             st.pyplot(fig2)
         except Exception as e:
             st.warning(f"Could not display cached EI fit: {e}")
 
-    # --- Noise: SD^2 vs Kerma (uses inverse conversion) ---
-    st.write("### Noise: SD^2 vs Kerma")
-    st.caption("Compute SD on linearized (kerma-domain) ROI, square it (SD^2), then fit SD^2 = a*k^2 + b*k + c.")
+    # --- Noise: SD² vs Kerma (uses inverse conversion) ---
+    st.write("### Noise: SD² vs Kerma")
+    st.caption("Compute SD on linearized (kerma-domain) ROI, square it (SD²), then fit SD² = a·k² + b·k + c.")
 
     def _build_kerma_from_m_fn(conv: dict):
         method = conv.get("method")
@@ -344,7 +373,7 @@ def display_detector_conversion_section(uploaded_files=None):
             # Inversion for polynomial fits is non-trivial; not implemented yet.
             raise NotImplementedError("Inverse conversion for 'poly' fit is not supported yet. Please use linear or log.")
 
-    if st.button("Run fit: SD^2 vs Kerma", key="run_fit_sd2"):
+    if st.button("Run fit: SD² vs Kerma", key="run_fit_sd2"):
         conv = st.session_state.get("detector_conversion")
         if not isinstance(conv, dict) or conv.get("coeffs") is None:
             st.error("Run the Detector Response Curve fit first to obtain the conversion function.")
@@ -377,17 +406,18 @@ def display_detector_conversion_section(uploaded_files=None):
                     p_sd = np.polyfit(k_arr[mask], y_arr[mask], 2)  # [a, b, c] for SD^2
                     y_fit = np.polyval(p_sd, k_arr)
                     a_, b_, c_ = p_sd
-                    formula_sd = f"SD^2 = {a_:.4g}*k^2 + {b_:.4g}*k + {c_:.4g}"
-                    # R^2
+                    formula_sd = f"SD² = {a_:.4g}*k² + {b_:.4g}*k + {c_:.4g}"
+                    latex_formula_sd = rf"SD² = {a_:.4g}\,k² + {b_:.4g}\,k + {c_:.4g}"
+                    # R²
                     ss_res = np.nansum((y_arr - y_fit) ** 2)
                     ss_tot = np.nansum((y_arr - np.nanmean(y_arr)) ** 2)
                     r2_sd = 1.0 - ss_res / ss_tot if ss_tot != 0 else np.nan
 
-                    # Dominance interval for middle term b*k over both a*k^2 and c
+                    # Dominance interval for middle term b*k over both a*k² and c
                     # Only compute if all coefficients are positive as requested
                     abc_positive = (a_ > 0) and (b_ > 0) and (c_ > 0)
                     k_min = None  # where b*k > c -> k > c/b
-                    k_max = None  # where b*k > a*k^2 -> k < b/a
+                    k_max = None  # where b*k > a*k² -> k < b/a
                     interval_exists = None
                     interval_degenerate = None
                     if abc_positive:
@@ -413,6 +443,7 @@ def display_detector_conversion_section(uploaded_files=None):
                     st.session_state["detector_sd2_fit"] = {
                         "coeffs": p_sd.tolist(),
                         "formula": formula_sd,
+                        "latex_formula": latex_formula_sd,
                         "r2": float(r2_sd) if not np.isnan(r2_sd) else None,
                         "sd2": [None if not np.isfinite(v) else float(v) for v in y_arr],
                         "abc_positive": bool(abc_positive),
@@ -430,10 +461,13 @@ def display_detector_conversion_section(uploaded_files=None):
     # Render cached SD^2 fit (if available)
     cached_sd = st.session_state.get("detector_sd2_fit")
     if isinstance(cached_sd, dict) and cached_sd.get("coeffs") is not None:
-        st.write(cached_sd.get("formula", ""))
+        if cached_sd.get("latex_formula"):
+            st.latex(cached_sd.get("latex_formula"))
+        else:
+            st.write(cached_sd.get("formula", ""))
         r2_sd = cached_sd.get("r2")
         if r2_sd is not None:
-            st.write(f"R^2 = {r2_sd:.4f}")
+            st.write(f"R² = {r2_sd:.4f}")
 
         # Retrieve dominance interval details from cache
         abc_positive = cached_sd.get("abc_positive", None)
@@ -448,11 +482,12 @@ def display_detector_conversion_section(uploaded_files=None):
         else:
             if (k_min is not None and k_max is not None and k_min > 0 and k_max > 0):
                 if interval_exists:
-                    st.write(f"Quantum noise dominance interval (over both structural and electronic noise): (k_min, k_max) = ({k_min:.4g}, {k_max:.4g}) μGy")
+                    st.write("Quantum noise dominance interval (over both structural and electronic noise):")
+                    st.latex(rf"(k_\mathrm{{min}},\,k_\mathrm{{max}}) = \left({k_min:.4g},\,{k_max:.4g}\right)\;\mu\,Gy")
                 elif interval_degenerate:
-                    st.info(f"No dominance interval (degenerate): k_min = k_max = {k_min:.4g} μGy (b^2 ≈ a*c)")
+                    st.latex(rf"k_\mathrm{{min}} = k_\mathrm{{max}} = {k_min:.4g}\;\mu\,Gy\quad (b^2 \approx a\,c)")
                 else:
-                    st.info("No kerma value where the quantum noise term dominates both other terms (b^2 ≤ a*c).")
+                    st.latex(r"b^2 \le a\,c\quad\text{(no middle-term dominance interval)}")
             else:
                 st.info("Dominance interval bounds could not be determined (non-positive or undefined).")
 
@@ -475,12 +510,12 @@ def display_detector_conversion_section(uploaded_files=None):
             y_fit = np.polyval(coeffs_sd, k_arr)
 
             fig3, ax3 = plt.subplots()
-            ax3.scatter(k_arr, y_arr, label='SD^2 data')
+            ax3.scatter(k_arr, y_arr, label='SD² data')
             # Sort kerma for smooth curve
             order = np.argsort(k_arr)
             ax3.plot(k_arr[order], y_fit[order], color='C3', label='quadratic fit')
-            ax3.set_xlabel('Kerma')
-            ax3.set_ylabel('SD^2')
+            ax3.set_xlabel(r"$k$")
+            ax3.set_ylabel(r"$SD^2$")
             ax3.legend()
             st.pyplot(fig3)
         except Exception as e:

@@ -2,6 +2,7 @@ import streamlit as st
 import pydicom
 import numpy as np
 import os
+import io
 from PIL import Image
 
 # Import functions from your analysis modules
@@ -71,29 +72,72 @@ def main_app_ui():
             # Default to the first RAW file if multiple are uploaded
             selected_raw = raw_files[0]
 
-            # --- RAW File Processing ---
+            # --- RAW or DICOM (forced) Processing ---
             raw_file = selected_raw
             dicom_filename = raw_file.name
 
             st.sidebar.subheader("RAW/STD Image Parameters")
             st.sidebar.info("Please provide the details for your RAW or STD image file.")
 
-            dtype_map = {
-                '16-bit Unsigned Integer': np.uint16,
-                '8-bit Unsigned Integer': np.uint8,
-                '32-bit Float': np.float32
-            }
-            dtype_str = st.sidebar.selectbox(
-                "Pixel Data Type",
-                options=list(dtype_map.keys()),
-                index=0,
-                key="raw_dtype",
-                help="Select the data type first to auto-suggest dimensions."
-            )
-            np_dtype = dtype_map[dtype_str]
+            # Read bytes once for detection and later processing
+            raw_data = raw_file.getvalue()
 
+            # Heuristic: detect DICOM-like content even for .raw/.std
+            dicom_suspected = False
             try:
-                raw_data = raw_file.getvalue()
+                if len(raw_data) >= 132 and raw_data[128:132] == b'DICM':
+                    dicom_suspected = True
+                else:
+                    # Try parsing header only (no pixel decode) with force
+                    ds_hdr = pydicom.dcmread(io.BytesIO(raw_data), force=True, stop_before_pixels=True)
+                    if hasattr(ds_hdr, 'Rows') and hasattr(ds_hdr, 'Columns'):
+                        dicom_suspected = True
+            except Exception:
+                pass
+
+            # Let user choose interpretation: RAW/STD (by extension) or DICOM
+            interpret_options = ["RAW/STD", "DICOM"]
+            default_index = 1 if dicom_suspected else 0
+            interpret_choice = st.sidebar.radio(
+                "Interpret uploaded file as:", options=interpret_options, index=default_index,
+                help="If your file is actually a DICOM saved with .raw/.std extension, choose DICOM to parse headers.", key="interpret_choice_raw"
+            )
+            if dicom_suspected:
+                st.sidebar.caption("DICOM-like header detected; defaulted to DICOM.")
+
+            if interpret_choice == "DICOM":
+                # Try to parse as DICOM even without preamble
+                try:
+                    ds = pydicom.dcmread(io.BytesIO(raw_data), force=True)
+                    dicom_dataset = ds
+                    dicom_filename = raw_file.name
+                    # Extract pixel spacing if available
+                    ps = getattr(ds, 'PixelSpacing', None)
+                    if ps and len(ps) >= 2:
+                        pixel_spacing_row = float(ps[0])
+                        pixel_spacing_col = float(ps[1])
+                    # Pixel data
+                    image_array = ds.pixel_array
+                    st.sidebar.success("Parsed as DICOM (forced). Using Rows/Columns from header.")
+                except Exception as e:
+                    st.sidebar.error(f"Failed to parse as DICOM: {e}")
+                    return
+            else:
+                # RAW/STD interpretation path
+                dtype_map = {
+                    '16-bit Unsigned Integer': np.uint16,
+                    '8-bit Unsigned Integer': np.uint8,
+                    '32-bit Float': np.float32
+                }
+                dtype_str = st.sidebar.selectbox(
+                    "Pixel Data Type",
+                    options=list(dtype_map.keys()),
+                    index=0,
+                    key="raw_dtype",
+                    help="Select the data type first to auto-suggest dimensions."
+                )
+                np_dtype = dtype_map[dtype_str]
+
                 itemsize = np.dtype(np_dtype).itemsize
                 file_size = len(raw_data)
 
@@ -129,33 +173,30 @@ def main_app_ui():
                 image_array = np.frombuffer(raw_data, dtype=np_dtype).reshape((height, width))
                 st.sidebar.success("RAW file loaded successfully.")
 
-                # --- "Dicomize" Feature (moved to sidebar for better UX) ---
-                st.sidebar.markdown("---")
-                st.sidebar.subheader("Convert to DICOM")
-                if st.sidebar.button("Generate DICOM file", key="dicomize_button"):
-                    try:
-                        # Call the refactored dicomizer function
-                        dicom_bytes, new_filename = generate_dicom_from_raw(
-                            image_array=image_array,
-                            pixel_spacing_row=pixel_spacing_row,
-                            pixel_spacing_col=pixel_spacing_col,
-                            original_filename=dicom_filename
-                        )
-                        
-                        # Create a download button in the sidebar
-                        st.sidebar.download_button(
-                            label="📥 Download .dcm file",
-                            data=dicom_bytes,
-                            file_name=new_filename,
-                            mime="application/dicom",
-                            key="dicom_download_button"
-                        )
-                        st.sidebar.success(f"Ready to download {new_filename}")
-                    except Exception as e:
-                        st.sidebar.error(f"Failed to create DICOM: {e}")
-            except Exception as e:
-                st.error(f"Error processing RAW file: {e}")
-                return
+            # --- "Dicomize" Feature (moved to sidebar for better UX) ---
+            st.sidebar.markdown("---")
+            st.sidebar.subheader("Convert to DICOM")
+            if st.sidebar.button("Generate DICOM file", key="dicomize_button"):
+                try:
+                    # Call the refactored dicomizer function
+                    dicom_bytes, new_filename = generate_dicom_from_raw(
+                        image_array=image_array,
+                        pixel_spacing_row=pixel_spacing_row,
+                        pixel_spacing_col=pixel_spacing_col,
+                        original_filename=dicom_filename
+                    )
+                    
+                    # Create a download button in the sidebar
+                    st.sidebar.download_button(
+                        label="📥 Download .dcm file",
+                        data=dicom_bytes,
+                        file_name=new_filename,
+                        mime="application/dicom",
+                        key="dicom_download_button"
+                    )
+                    st.sidebar.success(f"Ready to download {new_filename}")
+                except Exception as e:
+                    st.sidebar.error(f"Failed to create DICOM: {e}")
 
         elif is_dicom_upload:
             # Any DICOM upload routes to the comparison tool for RAW vs DICOM comparison.
@@ -182,7 +223,7 @@ def main_app_ui():
             if is_derived:
                 st.warning("This image is 'DERIVED' — it has undergone processing from original data.")
             elif is_primary:
-                st.checkbox("This image appears to be original or suffered minimal processing.")
+                st.success("This image appears to be original or suffered minimal processing.")
             else:
                 st.info("Image processing cannot be checked.")
 

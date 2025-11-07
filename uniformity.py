@@ -303,10 +303,41 @@ def display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_sp
 
     if pixel_spacing_row is not None and pixel_spacing_col is not None:
         if st.button("Run Uniformity Analysis"):
-            with st.spinner("Calculating uniformity metrics..."):
+            with st.spinner("Calculating uniformity metrics (kerma-domain)..."):
+                # Attempt to apply inverse detector conversion (pixel -> kerma) if available
+                kerma_image = image_array
+                conv = st.session_state.get("detector_conversion")
+                if isinstance(conv, dict) and conv.get("coeffs") is not None:
+                    method = conv.get("method")
+                    coeffs = np.array(conv.get("coeffs"), dtype=float)
+                    try:
+                        if method == 'linear':
+                            # m = a*k + b  -> k = (m - b)/a
+                            a, b = coeffs
+                            if a == 0:
+                                raise ValueError("Inverse conversion undefined (a=0) for linear fit")
+                            kerma_image = (image_array.astype(float) - b) / a
+                            st.caption("Applied inverse linear conversion: k = (m - b)/a")
+                        elif method == 'log':
+                            # m = a*ln(k) + b -> k = exp((m - b)/a)
+                            a, b = coeffs
+                            if a == 0:
+                                raise ValueError("Inverse conversion undefined (a=0) for log fit")
+                            with np.errstate(over='ignore', invalid='ignore'):
+                                kerma_image = np.exp((image_array.astype(float) - b) / a)
+                            st.caption("Applied inverse logarithmic conversion: k = exp((m - b)/a)")
+                        else:
+                            # Polynomial inverse not implemented
+                            st.warning("Detector conversion fit is polynomial; inverse not implemented. Using pixel domain for uniformity.")
+                    except Exception as inv_e:
+                        st.warning(f"Inverse conversion failed ({inv_e}); proceeding with pixel domain.")
+                else:
+                    st.caption("No detector conversion function cached; using pixel domain values.")
                 try:
-                    results = calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spacing_col)
-                    st.success("Uniformity Analysis Complete!") # Display results as a JSON object for clarity
+                    results = calculate_xray_uniformity_metrics(kerma_image, pixel_spacing_row, pixel_spacing_col)
+                    st.success("Uniformity Analysis Complete!")
+                    if kerma_image is not image_array:
+                        st.info("Uniformity metrics computed in kerma domain (after inverse conversion).")
                     
                     st.subheader("Calculated Uniformity Metrics")
                     col1, col2 = st.columns(2)

@@ -146,10 +146,10 @@ def display_detector_conversion_section(uploaded_files=None):
             return None
     # ------------------- Fit controls (deferred until button click) -------------------
     st.markdown("---")
-        # --- Detector Response Curve (MPV vs Kerma) ---
+    # --- Detector Response Curve (MPV vs Kerma) ---
     st.write("### Detector Response Curve")
 
-        # Default behavior: STD files typically fit better with log; RAW with linear.
+    # Default behavior: STD files typically fit better with log; RAW with linear.
     # If all uploaded files have .std extension -> default to 'log'; else 'linear'. User can override.
     all_std = (len(uploaded_exts) > 0 and all(ext == 'std' for ext in uploaded_exts))
     default_index = 1 if all_std else 0  # 0: linear, 1: log, 2: poly

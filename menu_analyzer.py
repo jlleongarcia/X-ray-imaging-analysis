@@ -50,7 +50,6 @@ def main_app_ui():
     pixel_spacing_col = None
     dicom_filename = None
     dicom_dataset = None  # Store the full dataset, will be None for RAW
-    is_difference_image = False  # Flag to track if we are analyzing a difference image
 
     if uploaded_files:
         # Determine file types
@@ -227,8 +226,6 @@ def main_app_ui():
             else:
                 st.info("Image processing cannot be checked.")
 
-            if is_difference_image:
-                st.success("This is a difference image created from two DICOMs using their stored pixel values.")
         else:  # This is a RAW/STD file
             st.info("This is a RAW/STD image file. Analysis will be performed directly on the pixel data using the parameters you provided in the sidebar.")
 
@@ -284,7 +281,8 @@ def main_app_ui():
             display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
 
         with tab_nps:
-            display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
+            # Pass all files uploaded in the sidebar into NPS so it can use them all
+            display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, uploaded_files=uploaded_files)
 
         with tab_mtf:
             display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)

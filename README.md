@@ -4,14 +4,13 @@ A Streamlit-based web application for performing common image quality analyses o
 
 ## Overview
 
-This application is designed for medical physicists, researchers, and engineers who need to evaluate the performance of X-ray imaging systems. It provides a suite of analysis tools that operate on DICOM files, including functionality to analyze single images or difference images created from two separate acquisitions.
+This application is designed for medical physicists, researchers, and engineers who need to evaluate the performance of X-ray imaging systems. It provides a suite of analysis tools that operate on DICOM files, including functionality to analyze single or multiple images.
 
 The toolkit is built with modularity in mind, allowing for easy extension and addition of new analysis modules.
 
 ## Features
 
 *   **DICOM File Handling**: Upload one or two `.dcm` files directly in the browser.
-*   **Difference Imaging**: Automatically calculates a difference image if two files are uploaded; subtraction is performed on the stored pixel values.
 *   **DICOM Header Inspection**: Displays a small set of helpful DICOM tags. The app now only highlights whether the image is `DERIVED` (ImageType contains 'DERIVED').
 *   **Raw Data Handling**: The previous helper that attempted DICOM→RAW conversion has been removed. The app uses `pydicom`'s `pixel_array` consistently for display and analysis.
 *   **From RAW to DICOM tool**: Convert RAW files into DICOM ones.
@@ -86,13 +85,9 @@ ls -la /opt/conda/envs/xr_env/bin
 
 1.  Launch the application (uv or docker).
 2.  Upload one or two DICOM files from the sidebar.
-3.  The main view shows the selected image (or difference image) and a small set of DICOM tags.
+3.  The main view shows the selected image and a small set of DICOM tags.
 4.  Select the analysis module from the sidebar and run the analysis in that module's panel.
 
-Notes on behavior:
-
-- The app uses the DICOM stored pixel values for all analyses; the explicit "revert transformations" UI was removed to reduce ambiguity.
-- Difference images are computed as subtraction of the stored pixel arrays from the two uploaded DICOMs.
 
 ## Contributing
 

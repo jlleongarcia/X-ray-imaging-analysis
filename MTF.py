@@ -1,157 +1,343 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
+import altair as alt
+from typing import Optional
 
-def get_freq_at_mtf_level(target_mtf_level: float, mtf_values_np: np.ndarray, frequencies_np: np.ndarray) -> float:
+try:
+    from pylinac.core.mtf import EdgeMTF
+except ImportError:
+    EdgeMTF = None
+
+
+def _bump_mtf_refresh():
+    """Callback to force a Streamlit rerun when MTF inputs change."""
+    st.session_state['mtf_refresh'] = st.session_state.get('mtf_refresh', 0) + 1
+
+
+def calculate_mtf_metrics(
+    edge_roi: np.ndarray,
+    pixel_spacing: float,
+    edge_smoothing: float = 1.0,
+) -> dict:
     """
-    Finds the spatial frequency at which the MTF curve reaches a certain target_mtf_level.
-    Assumes MTF values are generally decreasing with increasing frequency.
+    Calculate MTF using the slanted edge method (IEC 62220-1-1:2015).
 
-    Args:
-        target_mtf_level (float): The target MTF value (e.g., 0.5 for MTF50).
-        mtf_values_np (np.ndarray): 1D array of MTF values.
-        frequencies_np (np.ndarray): 1D array of corresponding spatial frequencies.
+    Parameters
+    ----------
+    edge_roi : np.ndarray
+        2D array containing the edge region for MTF analysis.
+    pixel_spacing : float
+        Physical pixel size in mm (average of row/col spacing).
+    edge_smoothing : float
+        Gaussian smoothing sigma for edge detection.
 
-    Returns:
-        float: The interpolated spatial frequency, or np.nan if not found/applicable.
+    Returns
+    -------
+    dict
+        Dictionary containing MTF results including frequencies, values, ESF, LSF, and spatial resolution metrics.
     """
-    if not (isinstance(mtf_values_np, np.ndarray) and isinstance(frequencies_np, np.ndarray) and
-            mtf_values_np.ndim == 1 and frequencies_np.ndim == 1 and
-            mtf_values_np.size == frequencies_np.size and mtf_values_np.size >= 2):
-        return np.nan
+    if edge_roi is None or not isinstance(edge_roi, np.ndarray) or edge_roi.ndim != 2:
+        st.error("Valid 2D edge ROI is required for MTF calculation.")
+        return {"MTF_Status": "Error: Invalid edge ROI"}
 
-    valid_indices = ~np.isnan(mtf_values_np) & ~np.isnan(frequencies_np)
-    mtf_clean = mtf_values_np[valid_indices]
-    freq_clean = frequencies_np[valid_indices]
+    if edge_roi.size < 100:  # Need sufficient pixels for meaningful edge analysis
+        st.error("Edge ROI is too small. Select a larger region containing the edge.")
+        return {"MTF_Status": "Error: ROI too small"}
 
-    if mtf_clean.size < 2:
-        return np.nan
-    if target_mtf_level > mtf_clean[0] + 1e-6 or target_mtf_level < mtf_clean[-1] - 1e-6:
-        return np.nan
-    return float(np.interp(target_mtf_level, mtf_clean[::-1], freq_clean[::-1]))
-
-def calculate_mtf_metrics(image_array, pixel_spacing_col):
-    """
-    Calculates MTF from a given 1D profile.
-    For this initial version, it uses the central row of the image_array as a simplified LSF.
-
-    Args:
-        image_array (np.ndarray): The input 2D image data.
-        pixel_spacing_col (float): Pixel spacing for columns (e.g., mm/pixel), used for dpmm.
-
-    Returns:
-        dict: A dictionary containing MTF results.
-    """
-    if image_array is None or image_array.ndim != 2 or image_array.shape[0] < 1 or image_array.shape[1] < 2:
-        # Need at least 2 pixels for a profile
-        st.error("Valid 2D image_array with at least 2 columns is required for MTF calculation.")
-        return {"MTF_Status": "Error: Invalid image array"}
-
-    if pixel_spacing_col is not None and pixel_spacing_col <= 0:
-        st.warning("Pixel spacing (col) is not valid (<=0). MTF spatial frequencies will be in cycles/pixel.")
-        dpmm = None
-        x_axis_unit = "cycles/pixel"
-    elif pixel_spacing_col is None:
-        st.warning("Pixel spacing (col) is not available. MTF spatial frequencies will be in cycles/pixel.")
-        dpmm = None
-        x_axis_unit = "cycles/pixel"
+    if pixel_spacing is None or pixel_spacing <= 0:
+        st.warning("Pixel spacing is not valid. MTF will be calculated but spatial frequencies may be incorrect.")
+        pixel_spacing = 0.1  # Default fallback
+        x_axis_unit = "cycles/mm (approx)"
     else:
-        dpmm = 1.0 / pixel_spacing_col
-        x_axis_unit = "lp/mm"
+        x_axis_unit = "cycles/mm"
 
-    # Extract the central row as a simplified LSF.
-    profile_values = image_array[image_array.shape[0] // 2, :].astype(float)
-    
-    if profile_values.size < 2: # MTF calculation needs at least 2 points
-        st.error("Extracted profile for MTF has fewer than 2 points.")
-        return {"MTF_Status": "Error: Profile too short"}
+    if EdgeMTF is None:
+        st.error("EdgeMTF class not available. Cannot perform IEC-compliant MTF analysis.")
+        return {"MTF_Status": "Error: EdgeMTF not available"}
 
     try:
-        # --- MTF Calculation from Scratch ---
-        N = profile_values.size
+        # Initialize EdgeMTF with the edge ROI
+        edge_mtf = EdgeMTF(
+            edge_data=edge_roi,
+            pixel_size=pixel_spacing,
+            edge_smoothing=edge_smoothing,
+        )
 
-        # 1. Compute FFT of the LSF
-        lsf_fft = np.fft.fft(profile_values)
+        # Extract results
+        frequencies = edge_mtf.frequencies
+        mtf_values = edge_mtf.mtf_values
+        esf_positions = edge_mtf.esf_positions
+        esf = edge_mtf.esf
+        lsf = edge_mtf.lsf
+        edge_angle_deg = np.degrees(edge_mtf.edge_angle)
 
-        # 2. Compute MTF (magnitude of LSF, positive frequencies only)
-        mtf_raw = np.abs(lsf_fft[:N//2])
+        # Calculate MTF50 and MTF10
+        try:
+            mtf50 = edge_mtf.spatial_resolution(50)
+        except Exception:
+            mtf50 = np.nan
 
-        # 3. Normalize MTF
-        if mtf_raw[0] < 1e-9: # Avoid division by zero or near-zero
-            st.warning("MTF at zero frequency is near zero. Cannot normalize.")
-            mtf_normalized = np.full_like(mtf_raw, np.nan) # Or mtf_raw, or handle error
-        else:
-            mtf_normalized = mtf_raw / mtf_raw[0]
+        try:
+            mtf10 = edge_mtf.spatial_resolution(10)
+        except Exception:
+            mtf10 = np.nan
 
-        # 4. Generate Frequency Axis
-        # Frequencies from fftfreq are in cycles/sample (cycles/pixel)
-        frequencies_cycles_per_pixel = np.fft.fftfreq(N)[:N//2]
-        if dpmm is not None: # Convert to lp/mm if dpmm is available
-            frequencies_for_mtf = frequencies_cycles_per_pixel * dpmm
-        else:
-            frequencies_for_mtf = frequencies_cycles_per_pixel
+        # Prepare chart data
+        mtf_chart_data = np.column_stack([frequencies, mtf_values])
+        esf_chart_data = np.column_stack([esf_positions, esf])
+        lsf_chart_data = np.column_stack([np.arange(len(lsf)), lsf])
 
-        frequencies_list = frequencies_for_mtf.tolist()
-        mtf_list = mtf_normalized.tolist()
-
-        # Prepare data for st.line_chart
-        mtf_data_for_chart = np.array([frequencies_list, mtf_list]).T
-
-        results = {
-            "frequencies": frequencies_list,
-            "mtf_values": mtf_list,
-            "mtf_chart_data": mtf_data_for_chart,
+        return {
+            "frequencies": frequencies.tolist(),
+            "mtf_values": mtf_values.tolist(),
+            "mtf_chart_data": mtf_chart_data,
+            "esf_chart_data": esf_chart_data,
+            "lsf_chart_data": lsf_chart_data,
             "x_axis_unit": x_axis_unit,
-            "source_profile": "Central Row (Simplified LSF)"
+            "MTF50": float(mtf50) if np.isfinite(mtf50) else "N/A",
+            "MTF10": float(mtf10) if np.isfinite(mtf10) else "N/A",
+            "edge_angle_deg": float(edge_angle_deg),
+            "is_vertical": bool(edge_mtf.is_vertical),
+            "nyquist_freq": float(frequencies[-1]) if len(frequencies) > 0 else np.nan,
         }
-
-        # Calculate MTF at specific percentages (MTF50%, MTF10%)
-        results["MTF50"] = get_freq_at_mtf_level(0.5, mtf_normalized, frequencies_for_mtf)
-        results["MTF10"] = get_freq_at_mtf_level(0.1, mtf_normalized, frequencies_for_mtf)
-        # Convert NaN to "N/A" for display
-        results["MTF50"] = "N/A" if np.isnan(results["MTF50"]) else results["MTF50"]
-        results["MTF10"] = "N/A" if np.isnan(results["MTF10"]) else results["MTF10"]
-
-        return results
 
     except Exception as e:
         st.error(f"Error during MTF calculation: {e}")
+        import traceback
+        st.error(traceback.format_exc())
         return {"MTF_Status": f"Error: {e}"}
 
+
 def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col):
+    """Display the MTF analysis UI with ROI selection and IEC-compliant edge method."""
     st.subheader("Modulation Transfer Function (MTF) Analysis")
+    
     st.markdown("""
-    **Note:** This initial MTF calculation uses the **central row** of the image as a simplified Line Spread Function (LSF).
-    For accurate MTF, a well-defined edge or slit from a phantom image is typically required.
+    **IEC 62220-1-1:2015 Slanted Edge Method**
+    
+    This analysis calculates MTF using the slanted edge technique:
+    1. Select a rectangular ROI containing a sharp edge (contrast phantom)
+    2. The edge should be slanted 3-5° from vertical or horizontal
+    3. Edge Spread Function (ESF) is extracted perpendicular to the edge
+    4. Line Spread Function (LSF) is derived by differentiating the ESF
+    5. MTF is calculated via Fourier Transform of the LSF
+    
+    **Requirements:**
+    - Edge phantom with sharp transition (high contrast)
+    - Edge angle 3-5° from vertical/horizontal for optimal accuracy
+    - Sufficient ROI size (at least 100x100 pixels recommended)
     """)
 
-    # Initialize session state for current NPS results
-    if 'current_mtf_results' not in st.session_state:
-        st.session_state['current_mtf_results'] = None
+    # Initialize session state
+    if 'mtf_roi_center_x' not in st.session_state:
+        st.session_state['mtf_roi_center_x'] = 50
+    if 'mtf_roi_center_y' not in st.session_state:
+        st.session_state['mtf_roi_center_y'] = 50
+    if 'mtf_roi_width' not in st.session_state:
+        st.session_state['mtf_roi_width'] = 20
+    if 'mtf_roi_height' not in st.session_state:
+        st.session_state['mtf_roi_height'] = 20
+    if 'mtf_edge_smoothing' not in st.session_state:
+        st.session_state['mtf_edge_smoothing'] = 1.0
 
-    if st.button("Run MTF Analysis (using central row)"):
-        if image_array is None:
-            st.error("Please upload an image first.")
-            return
+    if image_array is None or not isinstance(image_array, np.ndarray) or image_array.ndim != 2:
+        st.warning("Please upload a valid 2D image first.")
+        return
 
-        with st.spinner("Calculating MTF..."):
-            mtf_results_dict = calculate_mtf_metrics(image_array, pixel_spacing_col)
-            
-            if "MTF_Status" in mtf_results_dict and "Error" in mtf_results_dict["MTF_Status"]:
-                st.error(f"MTF Calculation Failed: {mtf_results_dict['MTF_Status']}")
-            elif mtf_results_dict and "mtf_chart_data" in mtf_results_dict:
-                st.success("MTF Analysis Complete!")
-                st.write(f"MTF calculated from: **{mtf_results_dict.get('source_profile', 'N/A')}**")
-                
-                st.subheader(f"MTF Curve ({mtf_results_dict['x_axis_unit']})")
-                df_mtf = pd.DataFrame(mtf_results_dict["mtf_chart_data"], columns=[mtf_results_dict['x_axis_unit'], 'MTF'])
-                st.line_chart(df_mtf.set_index(mtf_results_dict['x_axis_unit']))
+    h, w = image_array.shape
 
-                st.write(f"**MTF50% ({mtf_results_dict.get('x_axis_unit','')}):** {mtf_results_dict.get('MTF50', 'N/A')}")
-                st.write(f"**MTF10% ({mtf_results_dict.get('x_axis_unit','')}):** {mtf_results_dict.get('MTF10', 'N/A')}")
+    # ROI Selection Controls
+    st.markdown("### Edge ROI Selection")
+    st.caption("Define the rectangular region containing the edge for MTF analysis.")
 
-                if st.session_state['current_mtf_results'] is None:
-                    st.session_state['mtf_data'] = mtf_results_dict['mtf_chart_data']
-                
-            else:
-                st.error("MTF calculation did not return expected results.")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.slider(
+            "ROI Center X (%)",
+            min_value=0,
+            max_value=100,
+            key='mtf_roi_center_x',
+            on_change=_bump_mtf_refresh,
+        )
+        st.slider(
+            "ROI Width (%)",
+            min_value=5,
+            max_value=100,
+            key='mtf_roi_width',
+            on_change=_bump_mtf_refresh,
+        )
+
+    with col2:
+        st.slider(
+            "ROI Center Y (%)",
+            min_value=0,
+            max_value=100,
+            key='mtf_roi_center_y',
+            on_change=_bump_mtf_refresh,
+        )
+        st.slider(
+            "ROI Height (%)",
+            min_value=5,
+            max_value=100,
+            key='mtf_roi_height',
+            on_change=_bump_mtf_refresh,
+        )
+
+    # Advanced parameters
+    with st.expander("Advanced Parameters"):
+        st.slider(
+            "Edge Smoothing (Gaussian σ)",
+            min_value=0.1,
+            max_value=5.0,
+            step=0.1,
+            key='mtf_edge_smoothing',
+            help="Gaussian smoothing applied during edge detection. Lower values = less smoothing.",
+            on_change=_bump_mtf_refresh,
+        )
+
+    # Extract ROI from image
+    center_x_pct = st.session_state['mtf_roi_center_x']
+    center_y_pct = st.session_state['mtf_roi_center_y']
+    width_pct = st.session_state['mtf_roi_width']
+    height_pct = st.session_state['mtf_roi_height']
+
+    center_x_px = int(w * center_x_pct / 100)
+    center_y_px = int(h * center_y_pct / 100)
+    width_px = max(10, int(w * width_pct / 100))
+    height_px = max(10, int(h * height_pct / 100))
+
+    x0 = max(0, center_x_px - width_px // 2)
+    x1 = min(w, center_x_px + width_px // 2)
+    y0 = max(0, center_y_px - height_px // 2)
+    y1 = min(h, center_y_px + height_px // 2)
+
+    edge_roi = image_array[y0:y1, x0:x1]
+
+    st.caption(f"ROI: [{y0}:{y1}, {x0}:{x1}] → {edge_roi.shape[0]}×{edge_roi.shape[1]} pixels")
+
+    # Show ROI preview
+    with st.expander("Preview Edge ROI"):
+        roi_norm = (edge_roi - edge_roi.min()) / (edge_roi.max() - edge_roi.min() + 1e-9)
+        st.image(roi_norm, caption="Selected Edge ROI (normalized)", use_container_width=True)
+
+    # Pixel spacing
+    if pixel_spacing_row is not None and pixel_spacing_col is not None and pixel_spacing_row > 0 and pixel_spacing_col > 0:
+        pixel_spacing_avg = (pixel_spacing_row + pixel_spacing_col) / 2.0
+    else:
+        pixel_spacing_avg = 0.1
+        st.warning("Pixel spacing unavailable or invalid; using default 0.1 mm/pixel.")
+
+    # Calculate MTF
+    with st.spinner("Calculating MTF using IEC slanted edge method..."):
+        edge_smoothing = st.session_state['mtf_edge_smoothing']
+        mtf_results = calculate_mtf_metrics(
+            edge_roi=edge_roi,
+            pixel_spacing=pixel_spacing_avg,
+            edge_smoothing=edge_smoothing,
+        )
+
+    if "MTF_Status" in mtf_results and "Error" in mtf_results["MTF_Status"]:
+        st.error(f"MTF Calculation Failed: {mtf_results['MTF_Status']}")
+        return
+
+    if not mtf_results or "mtf_chart_data" not in mtf_results:
+        st.error("MTF calculation did not return expected results.")
+        return
+
+    st.success("MTF Analysis Complete!")
+
+    # Display edge detection info
+    edge_angle = mtf_results.get("edge_angle_deg", np.nan)
+    is_vertical = mtf_results.get("is_vertical", False)
+    orientation = "vertical" if is_vertical else "horizontal"
+    
+    st.info(f"**Edge detected:** {edge_angle:.2f}° from {orientation} | Orientation: {'Vertical' if is_vertical else 'Horizontal'}")
+    
+    if abs(edge_angle) > 10:
+        st.warning(f"Edge angle ({edge_angle:.1f}°) is outside the recommended 3-5° range. Consider adjusting ROI or phantom alignment.")
+
+    # MTF Curve
+    st.subheader(f"MTF Curve")
+    
+    mtf_chart_data_np = mtf_results["mtf_chart_data"]
+    df_mtf = pd.DataFrame(mtf_chart_data_np, columns=["Frequency", "MTF"])
+    
+    chart = alt.Chart(df_mtf).mark_line(clip=True, color='steelblue').encode(
+        x=alt.X('Frequency:Q', title=f'Spatial Frequency ({mtf_results["x_axis_unit"]})'),
+        y=alt.Y('MTF:Q', title='MTF', scale=alt.Scale(domain=[0, 1.05]))
+    ).properties(
+        title='Modulation Transfer Function (IEC 62220-1-1:2015)',
+        height=400
+    ).interactive()
+
+    # Add hover interaction
+    nearest = alt.selection_point(
+        fields=['Frequency'],
+        nearest=True,
+        on='mouseover',
+        empty=False,
+        clear='mouseout'
+    )
+
+    selectors = alt.Chart(df_mtf).mark_point().encode(
+        x='Frequency:Q',
+        opacity=alt.value(0),
+    ).add_params(nearest)
+
+    points = chart.mark_circle(size=80).encode(
+        opacity=alt.when(nearest).then(alt.value(1)).otherwise(alt.value(0)),
+    )
+
+    text = chart.mark_text(align='left', dx=7, dy=-7, fontSize=12, stroke='white', strokeWidth=1).encode(
+        text=alt.when(nearest).then(alt.Text('MTF:Q', format='.3f')).otherwise(alt.value('')),
+    )
+
+    final_chart = alt.layer(chart, selectors, points, text)
+    st.altair_chart(final_chart, use_container_width=True)
+
+    # MTF Metrics
+    st.subheader("MTF Spatial Resolution")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        mtf50_val = mtf_results.get('MTF50', 'N/A')
+        mtf50_str = f"{mtf50_val:.3f}" if isinstance(mtf50_val, (int, float)) else mtf50_val
+        st.metric("MTF 50%", f"{mtf50_str} {mtf_results['x_axis_unit']}")
+    
+    with col2:
+        mtf10_val = mtf_results.get('MTF10', 'N/A')
+        mtf10_str = f"{mtf10_val:.3f}" if isinstance(mtf10_val, (int, float)) else mtf10_val
+        st.metric("MTF 10%", f"{mtf10_str} {mtf_results['x_axis_unit']}")
+    
+    with col3:
+        nyquist = mtf_results.get('nyquist_freq', np.nan)
+        nyq_str = f"{nyquist:.3f}" if np.isfinite(nyquist) else "N/A"
+        st.metric("Nyquist Frequency", f"{nyq_str} {mtf_results['x_axis_unit']}")
+
+    # ESF and LSF plots
+    with st.expander("View Edge Spread Function (ESF) & Line Spread Function (LSF)"):
+        col_esf, col_lsf = st.columns(2)
+        
+        with col_esf:
+            st.markdown("**Edge Spread Function**")
+            esf_data = mtf_results["esf_chart_data"]
+            df_esf = pd.DataFrame(esf_data, columns=["Position", "ESF"])
+            esf_chart = alt.Chart(df_esf).mark_line().encode(
+                x=alt.X('Position:Q', title='Position (pixels)'),
+                y=alt.Y('ESF:Q', title='Normalized Intensity')
+            ).properties(height=300)
+            st.altair_chart(esf_chart, use_container_width=True)
+        
+        with col_lsf:
+            st.markdown("**Line Spread Function**")
+            lsf_data = mtf_results["lsf_chart_data"]
+            df_lsf = pd.DataFrame(lsf_data, columns=["Position", "LSF"])
+            lsf_chart = alt.Chart(df_lsf).mark_line(color='orange').encode(
+                x=alt.X('Position:Q', title='Position (pixels)'),
+                y=alt.Y('LSF:Q', title='Amplitude')
+            ).properties(height=300)
+            st.altair_chart(lsf_chart, use_container_width=True)
+
+    # Store results in session state
+    st.session_state['mtf_data'] = mtf_results['mtf_chart_data']

@@ -216,7 +216,8 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, add
         # Enforce consistency between ROI sizes
         selected_big = int(big_roi_size)
         selected_small = int(min(small_roi_size, selected_big))
-        nnps_2d_list = []
+        nps_2d_list = []
+        mean_pvs: List[float] = []
         for idx, img in enumerate(all_images):
             imgf = img.astype(float)
             nps_2d_raw, mean_pv = noise_power_spectrum_2d(
@@ -228,18 +229,20 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, add
             if not np.isfinite(mean_pv) or mean_pv == 0:
                 st.warning(f"Image {idx+1}: non-finite or zero mean PV; skipping from NNPS averaging.")
                 continue
-            nnps_2d = nps_2d_raw / (mean_pv ** 2)
-            nnps_2d_list.append(nnps_2d)
+            nps_2d_list.append(nps_2d_raw)
+            mean_pvs.append(float(mean_pv))
 
-        if not nnps_2d_list:
+        if not nps_2d_list:
             st.error("No valid images were processed for NNPS. Please verify uploaded images and exposure consistency.")
             return {"NPS_Status": "Error: No valid images"}
 
-        # Average NNPS across images
-        nnps_2d_avg = np.mean(np.stack(nnps_2d_list, axis=0), axis=0)
+        # Average raw NPS across images, then normalize once by a reference mean^2 (average of per-image means)
+        nps_2d_avg_raw = np.mean(np.stack(nps_2d_list, axis=0), axis=0)
+        mean_ref = float(np.mean(mean_pvs))
+        nnps_2d_avg = nps_2d_avg_raw / (mean_ref ** 2)
 
         # Total ROI pixels (simplified): area of the large ROI per image times number of analyzed images
-        total_roi_pixels = int(selected_big * selected_big * len(nnps_2d_list))
+        total_roi_pixels = int(selected_big * selected_big * len(nps_2d_list))
 
         # --- 1D NNPS Calculation from averaged 2D NNPS ---
         nnps_1d_result = noise_power_spectrum_1d(spectrum_2d=nnps_2d_avg)
@@ -285,7 +288,7 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, add
             "NNPS_1D_chart_data": nnps_data_for_chart,
             "x_axis_unit_nps": x_axis_unit_nps,
             "domain_used": domain_used,
-            "used_images": int(len(nnps_2d_list)),
+            "used_images": int(len(nps_2d_list)),
             "total_roi_pixels": total_roi_pixels,
         }
     except Exception as e:
@@ -345,11 +348,11 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     with st.spinner("Updating NPS..."):
         big_roi = st.session_state['nps_big_roi']
         small_roi = st.session_state['nps_small_roi']
-    nps_results_dict = calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col,
+        nps_results_dict = calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col,
                                                  additional_images=additional_arrays,
                                                  big_roi_size=big_roi, small_roi_size=small_roi)
-    # Mark last recompute time
-    st.session_state['nps_last_updated'] = time.time()
+        # Mark last recompute time
+        st.session_state['nps_last_updated'] = time.time()
 
     if "NPS_Status" in nps_results_dict and "Error" in nps_results_dict["NPS_Status"]:
         st.error(f"NPS Calculation Failed: {nps_results_dict['NPS_Status']}")

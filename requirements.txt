@@ -39,7 +39,7 @@ pydantic==2.11.7
 pydantic-core==2.33.2
 pydeck==0.9.1
 pydicom==3.0.1
-pylinac @ git+https://github.com/jlleongarcia/pylinac.git@b7c06a7d5051c0e619a47deadfdc438ce8a6aa9d
+pylinac @ git+https://github.com/jlleongarcia/pylinac.git@fed62af89656198d99d95165de371a5e57d953f6
 pyparsing==3.2.3
 python-dateutil==2.9.0.post0
 pytz==2025.2

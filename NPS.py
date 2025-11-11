@@ -323,21 +323,28 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         ref_shape = image_array.shape if isinstance(image_array, np.ndarray) and image_array.ndim == 2 else None
         additional_arrays = _load_uploaded_images(uploaded_files, reference_shape=ref_shape, reference_dtype=ref_dtype) if uploaded_files else []
 
+    # Fixed big ROI size: 125 mm square (IEC requirement)
+    BIG_ROI_SIZE_MM = 125.0  # mm
+    
+    # Calculate big_roi_size in pixels based on pixel spacing
+    if pixel_spacing_row is not None and pixel_spacing_col is not None and pixel_spacing_row > 0 and pixel_spacing_col > 0:
+        pixel_spacing_avg = (pixel_spacing_row + pixel_spacing_col) / 2.0
+        big_roi_pixels = int(np.round(BIG_ROI_SIZE_MM / pixel_spacing_avg))
+        st.caption(f"Big ROI: {BIG_ROI_SIZE_MM} mm × {BIG_ROI_SIZE_MM} mm = {big_roi_pixels} × {big_roi_pixels} pixels (based on pixel spacing {pixel_spacing_avg:.4f} mm/pixel)")
+    else:
+        # Fallback if pixel spacing not available: assume 0.1 mm/pixel
+        pixel_spacing_avg = 0.1
+        big_roi_pixels = int(np.round(BIG_ROI_SIZE_MM / pixel_spacing_avg))
+        st.warning(f"Pixel spacing unavailable; assuming 0.1 mm/pixel. Big ROI: {big_roi_pixels} × {big_roi_pixels} pixels.")
+
     # Persistent ROI size selectors (use session_state so values survive reruns)
-    allowed_big = [32, 64, 128, 256, 512, 1024, 2048, 4096]
+    # Only small ROI is user-selectable now
     allowed_small = [8, 16, 32, 64, 128, 256, 512]
-    if 'nps_big_roi' not in st.session_state:
-        st.session_state['nps_big_roi'] = 1024
     if 'nps_small_roi' not in st.session_state:
         st.session_state['nps_small_roi'] = 128
 
     st.markdown("### ROI sizes")
-    st.select_slider(
-        "Large central ROI size (pixels)",
-        options=allowed_big,
-        key='nps_big_roi',
-        on_change=_bump_nps_refresh,
-    )
+    st.caption(f"**Large central ROI**: Fixed at {BIG_ROI_SIZE_MM} mm × {BIG_ROI_SIZE_MM} mm ({big_roi_pixels} × {big_roi_pixels} pixels)")
     st.select_slider(
         "Small ROI size (pixels)",
         options=allowed_small,
@@ -352,7 +359,7 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         return
 
     with st.spinner("Updating NPS..."):
-        big_roi = st.session_state['nps_big_roi']
+        big_roi = big_roi_pixels  # Use calculated value from 125 mm
         small_roi = st.session_state['nps_small_roi']
         nps_results_dict = calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col,
                                                  additional_images=additional_arrays,

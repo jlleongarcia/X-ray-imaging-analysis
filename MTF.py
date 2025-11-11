@@ -18,10 +18,9 @@ def _bump_mtf_refresh():
 def calculate_mtf_metrics(
     edge_roi: np.ndarray,
     pixel_spacing: float,
-    edge_smoothing: float = 1.0,
 ) -> dict:
     """
-    Calculate MTF using the slanted edge method (IEC 62220-1-1:2015).
+    Calculate MTF using the slanted edge method (IEC 62220-1-1:2015) with full compliance corrections.
 
     Parameters
     ----------
@@ -29,13 +28,16 @@ def calculate_mtf_metrics(
         2D array containing the edge region for MTF analysis.
     pixel_spacing : float
         Physical pixel size in mm (average of row/col spacing).
-    edge_smoothing : float
-        Gaussian smoothing sigma for edge detection.
 
     Returns
     -------
     dict
         Dictionary containing MTF results including frequencies, values, ESF, LSF, and spatial resolution metrics.
+        
+    IEC Corrections Applied
+    -----------------------
+    1. Spectral smoothing correction for finite-element differentiation (Section 5.1.4)
+    2. Frequency axis scaling correction (1/cos α) for oblique projection
     """
     if edge_roi is None or not isinstance(edge_roi, np.ndarray) or edge_roi.ndim != 2:
         st.error("Valid 2D edge ROI is required for MTF calculation.")
@@ -57,40 +59,81 @@ def calculate_mtf_metrics(
         return {"MTF_Status": "Error: EdgeMTF not available"}
 
     try:
-        # Initialize EdgeMTF with the edge ROI
+        # Initialize EdgeMTF without edge smoothing (not in IEC standard)
         edge_mtf = EdgeMTF(
             edge_data=edge_roi,
             pixel_size=pixel_spacing,
-            edge_smoothing=edge_smoothing,
+            edge_smoothing=0.0,  # No pre-smoothing per IEC
         )
 
-        # Extract results
-        frequencies = edge_mtf.frequencies
-        mtf_values = edge_mtf.mtf_values
+        # Extract base results from EdgeMTF
+        frequencies_raw = edge_mtf.frequencies
+        mtf_values_raw = edge_mtf.mtf_values
         esf_positions = edge_mtf.esf_positions
         esf = edge_mtf.esf
         lsf = edge_mtf.lsf
-        edge_angle_deg = np.degrees(edge_mtf.edge_angle)
+        edge_angle_rad = edge_mtf.edge_angle
+        edge_angle_deg = np.degrees(edge_angle_rad)
 
-        # Calculate MTF50 and MTF10
+        # --- IEC Correction 1: Frequency axis scaling for oblique projection (1/cos α) ---
+        # The edge angle causes frequency axis compression; correct by dividing by cos(α)
+        cos_alpha = np.cos(edge_angle_rad)
+        if abs(cos_alpha) < 1e-6:
+            st.warning("Edge angle near 90°; frequency scaling may be unreliable.")
+            freq_scale_factor = 1.0
+        else:
+            freq_scale_factor = 1.0 / cos_alpha
+        
+        frequencies_corrected = frequencies_raw * freq_scale_factor
+
+        # --- IEC Correction 2: Spectral smoothing correction for finite-element differentiation ---
+        # Differentiation (np.gradient) acts as a low-pass filter on MTF.
+        # Correct by dividing MTF by the sinc function: sinc(π·f·Δx)
+        # Δx is the ESF sampling interval (mean spacing between ESF positions)
+        if len(esf_positions) > 1:
+            delta_x = np.mean(np.diff(esf_positions)) * pixel_spacing  # in mm
+        else:
+            delta_x = pixel_spacing
+        
+        # Build sinc correction: sinc(π·f·Δx)
+        # Avoid division by zero at f=0 and near-zero values
+        with np.errstate(divide='ignore', invalid='ignore'):
+            sinc_arg = np.pi * frequencies_corrected * delta_x
+            sinc_correction = np.sinc(sinc_arg / np.pi)  # np.sinc uses sinc(x) = sin(πx)/(πx)
+            # Avoid division by very small sinc values (near zeros)
+            sinc_correction = np.where(np.abs(sinc_correction) < 1e-6, 1.0, sinc_correction)
+            mtf_values_corrected = mtf_values_raw / sinc_correction
+        
+        # Clip MTF to valid range [0, 1] after correction
+        mtf_values_corrected = np.clip(mtf_values_corrected, 0.0, 1.0)
+
+        # Calculate MTF50 and MTF10 from corrected MTF
         try:
-            mtf50 = edge_mtf.spatial_resolution(50)
+            # Interpolate to find frequency at MTF = 0.5
+            if np.any(mtf_values_corrected <= 0.5):
+                mtf50 = np.interp(0.5, mtf_values_corrected[::-1], frequencies_corrected[::-1])
+            else:
+                mtf50 = np.nan
         except Exception:
             mtf50 = np.nan
 
         try:
-            mtf10 = edge_mtf.spatial_resolution(10)
+            # Interpolate to find frequency at MTF = 0.1
+            if np.any(mtf_values_corrected <= 0.1):
+                mtf10 = np.interp(0.1, mtf_values_corrected[::-1], frequencies_corrected[::-1])
+            else:
+                mtf10 = np.nan
         except Exception:
             mtf10 = np.nan
 
-        # Prepare chart data
-        mtf_chart_data = np.column_stack([frequencies, mtf_values])
+        # Prepare chart data with corrected values
+        mtf_chart_data = np.column_stack([frequencies_corrected, mtf_values_corrected])
         esf_chart_data = np.column_stack([esf_positions, esf])
         lsf_chart_data = np.column_stack([np.arange(len(lsf)), lsf])
 
         return {
-            "frequencies": frequencies.tolist(),
-            "mtf_values": mtf_values.tolist(),
+            "frequencies": frequencies_corrected.tolist(),
+            "mtf_values": mtf_values_corrected.tolist(),
             "mtf_chart_data": mtf_chart_data,
             "esf_chart_data": esf_chart_data,
             "lsf_chart_data": lsf_chart_data,
@@ -99,7 +142,9 @@ def calculate_mtf_metrics(
             "MTF10": float(mtf10) if np.isfinite(mtf10) else "N/A",
             "edge_angle_deg": float(edge_angle_deg),
             "is_vertical": bool(edge_mtf.is_vertical),
-            "nyquist_freq": float(frequencies[-1]) if len(frequencies) > 0 else np.nan,
+            "nyquist_freq": float(frequencies_corrected[-1]) if len(frequencies_corrected) > 0 else np.nan,
+            "freq_scale_factor": float(freq_scale_factor),
+            "iec_corrections_applied": True,
         }
 
     except Exception as e:
@@ -138,8 +183,6 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         st.session_state['mtf_roi_width'] = 20
     if 'mtf_roi_height' not in st.session_state:
         st.session_state['mtf_roi_height'] = 20
-    if 'mtf_edge_smoothing' not in st.session_state:
-        st.session_state['mtf_edge_smoothing'] = 1.0
 
     if image_array is None or not isinstance(image_array, np.ndarray) or image_array.ndim != 2:
         st.warning("Please upload a valid 2D image first.")
@@ -184,18 +227,6 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
             on_change=_bump_mtf_refresh,
         )
 
-    # Advanced parameters
-    with st.expander("Advanced Parameters"):
-        st.slider(
-            "Edge Smoothing (Gaussian σ)",
-            min_value=0.1,
-            max_value=5.0,
-            step=0.1,
-            key='mtf_edge_smoothing',
-            help="Gaussian smoothing applied during edge detection. Lower values = less smoothing.",
-            on_change=_bump_mtf_refresh,
-        )
-
     # Extract ROI from image
     center_x_pct = st.session_state['mtf_roi_center_x']
     center_y_pct = st.session_state['mtf_roi_center_y']
@@ -228,13 +259,17 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         pixel_spacing_avg = 0.1
         st.warning("Pixel spacing unavailable or invalid; using default 0.1 mm/pixel.")
 
+    # Add button to trigger MTF calculation
+    st.markdown("---")
+    if not st.button("Calculate MTF", key="mtf_calculate_button"):
+        st.info("Click 'Calculate MTF' button to compute the Modulation Transfer Function.")
+        return
+
     # Calculate MTF
-    with st.spinner("Calculating MTF using IEC slanted edge method..."):
-        edge_smoothing = st.session_state['mtf_edge_smoothing']
+    with st.spinner("Calculating IEC-compliant MTF with spectral and angle corrections..."):
         mtf_results = calculate_mtf_metrics(
             edge_roi=edge_roi,
             pixel_spacing=pixel_spacing_avg,
-            edge_smoothing=edge_smoothing,
         )
 
     if "MTF_Status" in mtf_results and "Error" in mtf_results["MTF_Status"]:
@@ -251,8 +286,13 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     edge_angle = mtf_results.get("edge_angle_deg", np.nan)
     is_vertical = mtf_results.get("is_vertical", False)
     orientation = "vertical" if is_vertical else "horizontal"
+    freq_scale = mtf_results.get("freq_scale_factor", 1.0)
     
     st.info(f"**Edge detected:** {edge_angle:.2f}° from {orientation} | Orientation: {'Vertical' if is_vertical else 'Horizontal'}")
+    
+    # Show IEC corrections applied
+    if mtf_results.get("iec_corrections_applied"):
+        st.caption(f"✓ IEC corrections applied: Frequency scaling (1/cos α = {freq_scale:.4f}) | Spectral smoothing correction")
     
     if abs(edge_angle) > 10:
         st.warning(f"Edge angle ({edge_angle:.1f}°) is outside the recommended 3-5° range. Consider adjusting ROI or phantom alignment.")

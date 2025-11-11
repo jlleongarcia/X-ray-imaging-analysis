@@ -104,7 +104,7 @@ def display_detector_conversion_section(uploaded_files=None):
         with col_a:
             kerma_val = st.number_input(f"Kerma (μGy) — {fname}", value=0.0, format="%.4f", key=f"kerma_{fname}")
         with col_b:
-            ei_val = st.number_input(f"Exposition Index (EI) — {fname}", value=0.0, format="%.0f", key=f"ei_{fname}")
+            ei_val = st.number_input(f"Exposition Index (EI) — {fname}", value=0.0, format="%.2f", key=f"ei_{fname}")
 
         kerma_vals.append(kerma_val)
 
@@ -187,6 +187,9 @@ def display_detector_conversion_section(uploaded_files=None):
     deviations_list_ei = [None] * len(results["files"])
     max_deviation_pct_ei = None
 
+    # Track if detector response curve was fitted (used to control return value)
+    detector_curve_fitted = False
+    
     if st.button("Run fit: Detector Response Curve", key="run_fit_detector_curve_out"):
         try:
             fit_vals, formula, r2, p = _fit_mpv_vs_kerma(kerma_vals, mpv_vals, fit_method, poly_degree)
@@ -196,10 +199,10 @@ def display_detector_conversion_section(uploaded_files=None):
                 coeffs = np.array(coeffs, dtype=float)
                 if method == 'linear':
                     a, b = coeffs
-                    return rf"m = {a:.4g}\\,k + {b:.4g}"
+                    return rf"m = {a:.4g}\,k + {b:.4g}"
                 elif method == 'log':
                     a, b = coeffs
-                    return rf"m = {a:.4g}\\,\\ln(k) + {b:.4g}"
+                    return rf"m = {a:.4g}\,\ln(k) + {b:.4g}"
                 else:
                     terms = []
                     deg = len(coeffs) - 1
@@ -208,9 +211,9 @@ def display_detector_conversion_section(uploaded_files=None):
                         if pwr == 0:
                             terms.append(f"{c:.4g}")
                         elif pwr == 1:
-                            terms.append(f"{c:.4g}\\,k")
+                            terms.append(f"{c:.4g}\,k")
                         else:
-                            terms.append(f"{c:.4g}\\,k^{{{pwr}}}")
+                            terms.append(f"{c:.4g}\,k^{{{pwr}}}")
                     return "m = " + " + ".join(terms)
             def _build_mpv_from_kerma_fn(method, coeffs, poly_deg=2):
                 coeffs = np.array(coeffs, dtype=float)
@@ -239,6 +242,7 @@ def display_detector_conversion_section(uploaded_files=None):
                 "r2": float(r2) if (r2 is not None and not np.isnan(r2)) else None,
                 "predict_mpv": mpv_from_kerma_fn,
             }
+            detector_curve_fitted = True
         except Exception as e:
             st.error(f"Fit failed: {e}")
 
@@ -304,7 +308,7 @@ def display_detector_conversion_section(uploaded_files=None):
                 st.session_state["detector_ei_fit"] = {
                     "coeffs": np.array(p_ei).tolist() if p_ei is not None else None,
                     "formula": formula_ei,
-                    "latex_formula": (lambda c: rf"EI = {c[0]:.4g}\\,k + {c[1]:.4g}")(np.array(p_ei, dtype=float)) if p_ei is not None else None,
+                    "latex_formula": (lambda c: rf"EI = {c[0]:.4g}\,k + {c[1]:.4g}")(np.array(p_ei, dtype=float)) if p_ei is not None else None,
                     "r2": float(r2_ei) if (r2_ei is not None and not np.isnan(r2_ei)) else None,
                 }
             except Exception as e:
@@ -406,7 +410,7 @@ def display_detector_conversion_section(uploaded_files=None):
                     p_sd = np.polyfit(k_arr[mask], y_arr[mask], 2)  # [a, b, c] for SD^2
                     y_fit = np.polyval(p_sd, k_arr)
                     a_, b_, c_ = p_sd
-                    formula_sd = f"SD² = {a_:.4g}*k² + {b_:.4g}*k + {c_:.4g}"
+                    formula_sd = f"SD² = {a_:.4g}\cdot k² + {b_:.4g}\cdot k + {c_:.4g}"
                     latex_formula_sd = rf"SD² = {a_:.4g}\,k² + {b_:.4g}\,k + {c_:.4g}"
                     # R²
                     ss_res = np.nansum((y_arr - y_fit) ** 2)
@@ -530,32 +534,36 @@ def display_detector_conversion_section(uploaded_files=None):
         writer.writerow([r['filename'], k, r['mpv'], r['sd'], dev_mpv, r.get('ei'), dev_ei])
     st.download_button('Download results CSV', data=output.getvalue(), file_name='detector_conversion_results.csv')
 
-    # Build a structured results object to return so callers can persist it to session state
-    results_obj = {
-        "files": [
-            {"filename": r["filename"], "kerma": float(k), "mpv": float(r["mpv"]), "sd": float(r["sd"]), "ei": float(r.get('ei')) if r.get('ei') is not None else None, "deviation_pct_mpv": (float(dmpv) if dmpv is not None else None), "deviation_pct_ei": (float(dei) if dei is not None else None)}
-            for k, r, dmpv, dei in zip(kerma_vals, results["files"], deviations_list, deviations_list_ei)
-        ],
-        "fit": {
-            "method": fit_method,
-            "formula": formula if formula is not None else None,
-            "r2": (float(r2) if (r2 is not None and not np.isnan(r2)) else None),
-            "coeffs": (np.array(p).tolist() if p is not None else None),
-            "kerma": [float(x) for x in kerma_vals],
-            "mpv": [float(x) for x in mpv_vals],
-            "fit_vals": ([float(x) for x in fit_vals] if fit_vals is not None else None),
-            "deviations_pct_mpv": [ (float(x) if x is not None else None) for x in deviations_list ],
-            "max_deviation_pct_mpv": max_deviation_pct,
-            "ei_fit": {
-                "formula": formula_ei if formula_ei is not None else None,
-                "r2": (float(r2_ei) if (r2_ei is not None and not np.isnan(r2_ei)) else None),
-                "coeffs": (np.array(p_ei).tolist() if p_ei is not None else None),
-                "ei": ([float(x) for x in ei_vals] if all(v is not None for v in ei_vals) else None),
-                "fit_vals_ei": ([float(x) for x in fit_vals_ei] if fit_vals_ei is not None else None),
-                "deviations_pct_ei": [ (float(x) if x is not None else None) for x in deviations_list_ei ],
-                "max_deviation_pct_ei": max_deviation_pct_ei
+    # detector_curve_fitted is True only when the button was clicked in the current rerun
+    if detector_curve_fitted:
+        # Build a structured results object to return so callers can persist it to session state
+        results_obj = {
+            "files": [
+                {"filename": r["filename"], "kerma": float(k), "mpv": float(r["mpv"]), "sd": float(r["sd"]), "ei": float(r.get('ei')) if r.get('ei') is not None else None, "deviation_pct_mpv": (float(dmpv) if dmpv is not None else None), "deviation_pct_ei": (float(dei) if dei is not None else None)}
+                for k, r, dmpv, dei in zip(kerma_vals, results["files"], deviations_list, deviations_list_ei)
+            ],
+            "fit": {
+                "method": fit_method,
+                "formula": formula if formula is not None else None,
+                "r2": (float(r2) if (r2 is not None and not np.isnan(r2)) else None),
+                "coeffs": (np.array(p).tolist() if p is not None else None),
+                "kerma": [float(x) for x in kerma_vals],
+                "mpv": [float(x) for x in mpv_vals],
+                "fit_vals": ([float(x) for x in fit_vals] if fit_vals is not None else None),
+                "deviations_pct_mpv": [ (float(x) if x is not None else None) for x in deviations_list ],
+                "max_deviation_pct_mpv": max_deviation_pct,
+                "ei_fit": {
+                    "formula": formula_ei if formula_ei is not None else None,
+                    "r2": (float(r2_ei) if (r2_ei is not None and not np.isnan(r2_ei)) else None),
+                    "coeffs": (np.array(p_ei).tolist() if p_ei is not None else None),
+                    "ei": ([float(x) for x in ei_vals] if all(v is not None for v in ei_vals) else None),
+                    "fit_vals_ei": ([float(x) for x in fit_vals_ei] if fit_vals_ei is not None else None),
+                    "deviations_pct_ei": [ (float(x) if x is not None else None) for x in deviations_list_ei ],
+                    "max_deviation_pct_ei": max_deviation_pct_ei
+                }
             }
         }
-    }
-
-    return results_obj
+        return results_obj
+    
+    # Always return None if button wasn't clicked this run
+    return None

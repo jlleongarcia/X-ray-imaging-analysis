@@ -345,6 +345,12 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         on_change=_bump_nps_refresh,
     )
 
+    # Add button to trigger NPS calculation
+    st.markdown("---")
+    if not st.button("Calculate NPS", key="nps_calculate_button"):
+        st.info("Click 'Calculate NPS' button to compute the Noise Power Spectrum.")
+        return
+
     with st.spinner("Updating NPS..."):
         big_roi = st.session_state['nps_big_roi']
         small_roi = st.session_state['nps_small_roi']

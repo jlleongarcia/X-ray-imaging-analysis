@@ -17,6 +17,36 @@ from detector_conversion import display_detector_conversion_section
 # --- Streamlit Page Configuration ---
 st.set_page_config(page_title="X-ray Image Analysis Toolkit", layout="wide")
 
+def detect_file_type(file_bytes, filename):
+    """
+    Detect file type by examining content and filename.
+    Returns: 'dicom', 'raw', or 'unknown'
+    """
+    try:
+        # Check for DICOM magic number
+        if len(file_bytes) >= 132 and file_bytes[128:132] == b'DICM':
+            return 'dicom'
+        
+        # Try to parse as DICOM (some DICOM files don't have the magic number)
+        try:
+            ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True, stop_before_pixels=True)
+            if hasattr(ds, 'Rows') and hasattr(ds, 'Columns'):
+                return 'dicom'
+        except Exception:
+            pass
+        
+        # Check filename extension
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in ['.dcm', '.dicom']:
+            return 'dicom'
+        elif ext in ['.raw', '.std']:
+            return 'raw'
+        
+        # For extensionless files, assume raw unless proven otherwise
+        return 'raw'
+    except Exception:
+        return 'unknown'
+
 def main_app_ui():
     # --- Initialize session state for data sharing ---
     if 'mtf_data' not in st.session_state:
@@ -40,8 +70,8 @@ def main_app_ui():
     # --- File Upload and Initial Image Display ---
     # Use a key for the file uploader to manage its state explicitly
     uploaded_files = st.sidebar.file_uploader(
-        "Choose DICOM (.dcm) or RAW/STD (.raw/.std) file(s)",
-        type=["dcm", "dicom", "raw", "std"],
+        "Choose DICOM (.dcm), RAW/STD (.raw/.std) files, or extensionless files",
+        type=None,  # Accept all file types including extensionless
         accept_multiple_files=True
     )
 
@@ -52,18 +82,45 @@ def main_app_ui():
     dicom_dataset = None  # Store the full dataset, will be None for RAW
 
     if uploaded_files:
-        # Determine file types
-        file_extensions = {os.path.splitext(f.name)[1].lower() for f in uploaded_files}
-        # Treat .std as RAW-like for reading/analysis
-        is_raw_upload = ('.raw' in file_extensions) or ('.std' in file_extensions)
-        is_dicom_upload = '.dcm' in file_extensions or '.dicom' in file_extensions
-
+        # Determine file types by content and extension
+        file_types = []
+        for f in uploaded_files:
+            file_bytes = f.getvalue()
+            detected_type = detect_file_type(file_bytes, f.name)
+            file_types.append((f, detected_type))
+        
+        # Categorize files
+        dicom_files = [f for f, ftype in file_types if ftype == 'dicom']
+        raw_files = [f for f, ftype in file_types if ftype == 'raw']
+        unknown_files = [f for f, ftype in file_types if ftype == 'unknown']
+        
+        # Show info about detected file types
+        if uploaded_files:
+            st.sidebar.markdown("**Detected file types:**")
+            for f, ftype in file_types:
+                if ftype == 'dicom':
+                    st.sidebar.write(f"🏥 {f.name} → DICOM")
+                elif ftype == 'raw':
+                    ext = os.path.splitext(f.name)[1]
+                    if ext:
+                        st.sidebar.write(f"📷 {f.name} → RAW/STD")
+                    else:
+                        st.sidebar.write(f"📷 {f.name} → RAW (extensionless)")
+                else:
+                    st.sidebar.write(f"❓ {f.name} → Unknown")
+        
+        # Show warning for unknown files
+        if unknown_files:
+            st.sidebar.warning(f"Unknown file types detected: {[f.name for f in unknown_files]}")
+        
+        is_dicom_upload = len(dicom_files) > 0
+        is_raw_upload = len(raw_files) > 0
+        
         # The comparison tool handles mixed files. For all other analyses, we only allow one type.
         is_comparison_candidate = is_raw_upload and is_dicom_upload
 
         if is_raw_upload and not is_dicom_upload:
-            # Allow uploading multiple RAW/STD files. Provide a selector to choose which one to analyze.
-            raw_files = [f for f in uploaded_files if os.path.splitext(f.name)[1].lower() in ('.raw', '.std')]
+            # Allow uploading multiple RAW/STD files. Use detected raw files.
             if not raw_files:
                 st.error("No RAW/STD files found in upload.")
                 return
@@ -197,8 +254,13 @@ def main_app_ui():
                 except Exception as e:
                     st.sidebar.error(f"Failed to create DICOM: {e}")
 
-        elif is_dicom_upload:
-            # Any DICOM upload routes to the comparison tool for RAW vs DICOM comparison.
+        elif is_dicom_upload and not is_raw_upload:
+            # Pure DICOM upload - route to comparison tool
+            st.header("Developer: Compare RAW vs DICOM")
+            display_comparison_tool_section(dicom_files)
+            return
+        elif is_comparison_candidate:
+            # Mixed upload (both DICOM and RAW detected) - route to comparison tool
             st.header("Developer: Compare RAW vs DICOM")
             display_comparison_tool_section(uploaded_files)
             return
@@ -269,8 +331,8 @@ def main_app_ui():
             # Prefer the sidebar-uploaded RAW/STD files if available; pass them to the detector UI so re-upload is not needed
             raw_sidebar_files = None
             if uploaded_files:
-                # Filter only .raw/.std files from the sidebar upload list
-                raw_sidebar_files = [f for f in uploaded_files if os.path.splitext(f.name)[1].lower() in ('.raw', '.std')] or None
+                # Use the detected raw files from content analysis
+                raw_sidebar_files = raw_files or None
 
             detector_results = display_detector_conversion_section(uploaded_files=raw_sidebar_files)
             # If the detector module returned structured output, persist it to session state

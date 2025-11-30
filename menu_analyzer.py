@@ -19,31 +19,46 @@ st.set_page_config(page_title="X-ray Image Analysis Toolkit", layout="wide")
 
 def detect_file_type(file_bytes, filename):
     """
-    Detect file type by examining content and filename.
+    Detect file type by examining DICOM tag (0008,0068) Presentation Intent Type.
     Returns: 'dicom', 'raw', or 'unknown'
+    
+    Logic:
+    - If DICOM tag (0008,0068) exists:
+      - "FOR PRESENTATION" → true DICOM file
+      - "FOR PROCESSING" → RAW file (even if has .dcm extension)
+    - If no DICOM tag → RAW file
     """
     try:
-        # Check for DICOM magic number
-        if len(file_bytes) >= 132 and file_bytes[128:132] == b'DICM':
-            return 'dicom'
-        
-        # Try to parse as DICOM (some DICOM files don't have the magic number)
+        # Try to parse as DICOM to check for tag (0008,0068)
         try:
             ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True, stop_before_pixels=True)
-            if hasattr(ds, 'Rows') and hasattr(ds, 'Columns'):
-                return 'dicom'
+            
+            # Check for Presentation Intent Type tag (0008,0068)
+            if hasattr(ds, 'PresentationIntentType') and ds.PresentationIntentType:
+                presentation_intent = str(ds.PresentationIntentType).upper().strip()
+                
+                # Check the presentation intent type
+                if "FOR PRESENTATION" in presentation_intent:
+                    return 'dicom'
+                elif "FOR PROCESSING" in presentation_intent:
+                    return 'raw'
+                else:
+                    # Has PresentationIntentType but neither FOR PRESENTATION nor FOR PROCESSING
+                    # Default to DICOM if it's a valid DICOM structure
+                    if hasattr(ds, 'Rows') and hasattr(ds, 'Columns'):
+                        return 'dicom'
+            else:
+                # Valid DICOM structure but no PresentationIntentType tag - assume DICOM
+                if hasattr(ds, 'Rows') and hasattr(ds, 'Columns'):
+                    return 'dicom'
+                    
         except Exception:
-            pass
-        
-        # Check filename extension
-        ext = os.path.splitext(filename)[1].lower()
-        if ext in ['.dcm', '.dicom']:
-            return 'dicom'
-        elif ext in ['.raw', '.std']:
+            # Not a valid DICOM file - treat as RAW
             return 'raw'
         
-        # For extensionless files, assume raw unless proven otherwise
+        # Fallback: if we reach here, treat as RAW
         return 'raw'
+        
     except Exception:
         return 'unknown'
 
@@ -72,7 +87,8 @@ def main_app_ui():
     uploaded_files = st.sidebar.file_uploader(
         "Choose DICOM (.dcm), RAW/STD (.raw/.std) files, or extensionless files",
         type=None,  # Accept all file types including extensionless
-        accept_multiple_files=True
+        accept_multiple_files=True,
+        help="Maximum file size: 500 MB per file"
     )
 
     image_array = None
@@ -99,15 +115,31 @@ def main_app_ui():
             st.sidebar.markdown("**Detected file types:**")
             for f, ftype in file_types:
                 if ftype == 'dicom':
-                    st.sidebar.write(f"🏥 {f.name} → DICOM")
+                    st.sidebar.write(f"🏥 {f.name} → DICOM (FOR PRESENTATION)")
                 elif ftype == 'raw':
-                    ext = os.path.splitext(f.name)[1]
-                    if ext:
+                    ext = os.path.splitext(f.name)[1].lower()
+                    if ext in ['.dcm', '.dicom']:
+                        st.sidebar.write(f"📷 {f.name} → RAW (FOR PROCESSING)")
+                    elif ext:
                         st.sidebar.write(f"📷 {f.name} → RAW/STD")
                     else:
                         st.sidebar.write(f"📷 {f.name} → RAW (extensionless)")
                 else:
                     st.sidebar.write(f"❓ {f.name} → Unknown")
+        
+        # Debug information for DICOM tag checking
+        if uploaded_files and st.sidebar.checkbox("Show DICOM Debug Info", value=False):
+            st.sidebar.markdown("**Debug Info:**")
+            for f, ftype in file_types:
+                try:
+                    ds = pydicom.dcmread(io.BytesIO(f.getvalue()), force=True, stop_before_pixels=True)
+                    if hasattr(ds, 'PresentationIntentType'):
+                        intent = ds.PresentationIntentType
+                        st.sidebar.write(f"🔍 {f.name}: PresentationIntentType = '{intent}'")
+                    else:
+                        st.sidebar.write(f"🔍 {f.name}: No PresentationIntentType tag")
+                except Exception as e:
+                    st.sidebar.write(f"🔍 {f.name}: Not DICOM or parse error")
         
         # Show warning for unknown files
         if unknown_files:
@@ -115,6 +147,16 @@ def main_app_ui():
         
         is_dicom_upload = len(dicom_files) > 0
         is_raw_upload = len(raw_files) > 0
+        
+        # Check for mixed file types and show error (except for comparison tool)
+        if is_dicom_upload and is_raw_upload:
+            st.sidebar.error("⚠️ Mixed file types detected! Please upload only one type of files (either all RAW or all DICOM). Note: You can still use the comparison tool to compare RAW vs DICOM files.")
+            if st.sidebar.button("Use Comparison Tool Instead"):
+                st.header("Developer: Compare RAW vs DICOM")
+                display_comparison_tool_section(uploaded_files)
+                return
+            else:
+                return  # Stop processing until user fixes the upload
         
         # The comparison tool handles mixed files. For all other analyses, we only allow one type.
         is_comparison_candidate = is_raw_upload and is_dicom_upload
@@ -258,11 +300,6 @@ def main_app_ui():
             # Pure DICOM upload - route to comparison tool
             st.header("Developer: Compare RAW vs DICOM")
             display_comparison_tool_section(dicom_files)
-            return
-        elif is_comparison_candidate:
-            # Mixed upload (both DICOM and RAW detected) - route to comparison tool
-            st.header("Developer: Compare RAW vs DICOM")
-            display_comparison_tool_section(uploaded_files)
             return
 
     # --- Main Area ---

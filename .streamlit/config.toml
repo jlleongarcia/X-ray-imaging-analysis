@@ -1,0 +1,14 @@
+[server]
+# Increase file upload limit to 500 MB
+maxUploadSize = 500
+
+[theme]
+# Optional: Configure theme colors for better UX
+primaryColor = "#1f77b4"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f2f6"
+textColor = "#262730"
+
+[browser]
+# Don't automatically open browser when running locally
+gatherUsageStats = false

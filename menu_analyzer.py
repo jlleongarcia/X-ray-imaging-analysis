@@ -256,14 +256,39 @@ def main_app_ui():
                 possible_dims = get_factors(total_pixels)
 
                 if not possible_dims:
-                    st.sidebar.warning("Could not determine any possible dimensions. Please enter manually.")
-                    width = st.sidebar.number_input("Image Width (pixels)", min_value=1, value=1024)
-                    height = st.sidebar.number_input("Image Height (pixels)", min_value=1, value=1024)
-                else:
-                    # Find the most "square" dimension and assign it.
-                    default_dim_index = len(possible_dims) // 2
-                    height, width = possible_dims[default_dim_index]
-                    st.sidebar.info(f"Auto-detected dimensions: **{width} x {height}**")
+                    st.sidebar.error(f"Could not determine valid dimensions for {total_pixels} pixels.")
+                    return
+
+                # Filter to keep only reasonable aspect ratios (width/height between 1/3 and 3)
+                reasonable_dims = []
+                for h, w in possible_dims:
+                    aspect_ratio = w / h
+                    if 1/3 <= aspect_ratio <= 3:
+                        reasonable_dims.append((h, w))
+                
+                if not reasonable_dims:
+                    # Fallback to all dims if filtering removed everything
+                    reasonable_dims = possible_dims
+                    st.sidebar.warning("No square-like dimensions found. Showing all possibilities.")
+                
+                # Find the most "square" dimension as default
+                default_dim_index = len(reasonable_dims) // 2
+                
+                # Format dimensions for dropdown display
+                dim_options = [f"{w} x {h}" for h, w in reasonable_dims]
+                
+                # Let user select from dropdown
+                selected_dim = st.sidebar.selectbox(
+                    "Image Dimensions (Width x Height)",
+                    options=dim_options,
+                    index=default_dim_index,
+                    key="raw_dimensions",
+                    help="Auto-detected dimensions. Showing only square-like options (aspect ratio between 1:3 and 3:1)."
+                )
+                
+                # Parse selected dimensions
+                width, height = map(int, selected_dim.split(" x "))
+                st.sidebar.caption(f"Selected: **{width} x {height}** pixels ({width * height:,} total pixels)")
 
                 pixel_spacing_row = st.sidebar.number_input("Pixel Spacing Row (mm/px)", min_value=0.001, value=0.1, step=0.01, format="%.3f", key="raw_ps_row")
                 pixel_spacing_col = st.sidebar.number_input("Pixel Spacing Col (mm/px)", min_value=0.001, value=0.1, step=0.01, format="%.3f", key="raw_ps_col")

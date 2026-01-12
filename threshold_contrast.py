@@ -73,46 +73,26 @@ def display_threshold_contrast_section(pixel_spacing_row, pixel_spacing_col):
     """Renders the Threshold Contrast section in the Streamlit app."""
     st.header("Threshold Contrast Calculation")
 
-    # --- Step 1: Check for necessary data in session_state ---
-    st.markdown("This calculation requires MTF and NNPS data. Please run those analyses first.")
-
-    mtf_ready = 'mtf_data' in st.session_state and st.session_state['mtf_data'] is not None
-    nnps_ready = 'nnps_data' in st.session_state and st.session_state['nnps_data'] is not None
-
-    col_status1, col_status2 = st.columns(2)
-    with col_status1:
-        st.metric("MTF Data Status", "LOADED ✅" if mtf_ready else "MISSING ⚠️")
-    with col_status2:
-        st.metric("NNPS Data Status", "LOADED ✅" if nnps_ready else "MISSING ⚠️")
-
+    # --- Step 1: Information ---
+    st.info("This feature has been disabled. MTF and NNPS cache data are no longer used.")
     st.markdown("---")
 
-    # --- Step 2: Get user inputs ---
+    # --- Step 2: Get user inputs (disabled) ---
     st.subheader("Object and System Parameters")
     col1, col2, col3 = st.columns(3)
     with col1:
-        meas_size = st.number_input("Measured Size in cm", min_value=1.0, value=20.0, step=0.1, format="%.1f")
+        meas_size = st.number_input("Measured Size in cm", min_value=1.0, value=20.0, step=0.1, format="%.1f", disabled=True)
     with col2:
-        image_size = st.number_input("Image Size in cm", min_value=1.0, value=20.0, step=0.1, format="%.1f")
+        image_size = st.number_input("Image Size in cm", min_value=1.0, value=20.0, step=0.1, format="%.1f", disabled=True)
     with col3:
-        object_radius = st.number_input("Object Radius (R) in mm", min_value=0.01, value=0.5, step=0.01, format="%.2f")
+        object_radius = st.number_input("Object Radius (R) in mm", min_value=0.01, value=0.5, step=0.01, format="%.2f", disabled=True)
     
     pixel_spacing = (pixel_spacing_row + pixel_spacing_col) / 2 # Average spacing
     nyquist_freq = 0.5 / pixel_spacing
 
-    # Display the Nyquist frequency and max MTF frequency as outputs
+    # Display the Nyquist frequency
     st.subheader("Key Frequencies for Calculation")
     st.metric("Nyquist Frequency", f"{nyquist_freq:.2f} lp/mm")
-    if mtf_ready:
-        st.metric("Max MTF Frequency", f"{np.max(st.session_state['mtf_data'][:, 0]):.2f} lp/mm")
 
-    # --- Step 3: Run calculation ---
-    if st.button("Calculate Threshold Contrast", disabled=not (mtf_ready and nnps_ready)):
-        with st.spinner("Calculating..."):
-            magnification = meas_size / image_size
-            ct = calculate_threshold_contrast_advanced(
-                object_radius=object_radius, magnification=magnification, mtf_data=st.session_state['mtf_data'],
-                nnps_data=st.session_state['nnps_data'], nyquist_freq=nyquist_freq
-            )
-            st.metric(label=f"Threshold Contrast for a {object_radius*2:.1f} mm Object", value=f"{ct:.4f}")
-            st.info(f"A lower value indicates better detectability. This object needs to be at least {ct:.2%} brighter or darker than its background to be seen.")
+    # --- Step 3: Disabled calculation ---
+    st.button("Calculate Threshold Contrast", disabled=True)

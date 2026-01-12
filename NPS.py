@@ -452,5 +452,3 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         nnps_value_2 = f"{target_info['value_2']:.3f}" if not np.isnan(target_info['value_2']) else "N/A"
         st.write(f"**NNPS at {target_info['target_f1']:.2f} {x_axis_unit_nps}**: {nnps_value_1}")
         st.write(f"**NNPS at {target_info['target_f2']:.2f} {x_axis_unit_nps}**: {nnps_value_2}")
-
-    st.session_state['nnps_data'] = nnps_chart_data

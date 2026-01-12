@@ -64,10 +64,6 @@ def detect_file_type(file_bytes, filename):
 
 def main_app_ui():
     # --- Initialize session state for data sharing ---
-    if 'mtf_data' not in st.session_state:
-        st.session_state['mtf_data'] = None
-    if 'nnps_data' not in st.session_state:
-        st.session_state['nnps_data'] = None
     # Ensure detector conversion cache key exists (stores predict_mpv and fit metadata)
     if 'detector_conversion' not in st.session_state:
         st.session_state['detector_conversion'] = None
@@ -75,8 +71,6 @@ def main_app_ui():
     # Always display session state status in the sidebar for debugging
     st.sidebar.markdown("---")
     st.sidebar.subheader("Saved Analysis Data Status")
-    st.sidebar.write(f"MTF Data: {'Loaded ✅' if st.session_state['mtf_data'] is not None else 'Missing ⚠️'}")
-    st.sidebar.write(f"NNPS Data: {'Loaded ✅' if st.session_state['nnps_data'] is not None else 'Missing ⚠️'}")
     _dc = st.session_state['detector_conversion']
     _dc_loaded = isinstance(_dc, dict) and (_dc.get('predict_mpv') is not None)
     st.sidebar.write(f"Detector Conversion Fn: {'Loaded ✅' if _dc_loaded else 'Missing ⚠️'}")
@@ -425,8 +419,6 @@ def main_app_ui():
     # --- Add a clear session state button for debugging ---
     st.sidebar.markdown("---")
     if st.sidebar.button("Clear All Saved Analysis Data"):
-        st.session_state['mtf_data'] = None
-        st.session_state['nnps_data'] = None
         st.session_state['detector_conversion'] = None
         # Also clear structured detector results if present
         st.session_state['detector_conv'] = None

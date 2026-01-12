@@ -378,6 +378,3 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                 y=alt.Y('LSF:Q', title='Amplitude')
             ).properties(height=300)
             st.altair_chart(lsf_chart, use_container_width=True)
-
-    # Store results in session state
-    st.session_state['mtf_data'] = mtf_results['mtf_chart_data']

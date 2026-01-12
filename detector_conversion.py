@@ -350,7 +350,7 @@ def display_detector_conversion_section(uploaded_files=None):
         except Exception as e:
             st.warning(f"Could not display cached EI fit: {e}")
 
-    # --- Noise: SD² vs Kerma (uses inverse conversion) ---
+    # --- Noise: SD² vs Kerma ---
     st.write("### Noise: SD² vs Kerma")
     st.caption("Compute SD on linearized (kerma-domain) ROI, square it (SD²), then fit SD² = a·k² + b·k + c.")
 
@@ -495,6 +495,19 @@ def display_detector_conversion_section(uploaded_files=None):
             else:
                 st.info("Dominance interval bounds could not be determined (non-positive or undefined).")
 
+        # Display table with kerma, mean, and SD values from uploaded images
+        st.write("**Data from uploaded images:**")
+        import pandas as pd
+        table_data = []
+        for rec in results["files"]:
+            table_data.append({
+                "Kerma (μGy)": float(rec.get("kerma", 0)),
+                "Mean Value": float(rec.get("mpv", 0)),
+                "SD Value": float(rec.get("sd", 0))
+            })
+        df_table = pd.DataFrame(table_data)
+        st.dataframe(df_table, use_container_width=True, hide_index=True)
+
         # Recompute SD_norm scatter with current data for visualization
         conv = st.session_state.get("detector_conversion")
         try:
@@ -511,16 +524,28 @@ def display_detector_conversion_section(uploaded_files=None):
             k_arr = np.array([float(x) for x in kerma_vals], dtype=float)
             y_arr = np.array(sd2_vals, dtype=float)
             coeffs_sd = np.array(cached_sd.get("coeffs"), dtype=float)
+            a_, b_, c_ = coeffs_sd
+            
+            # Total fit and individual components
             y_fit = np.polyval(coeffs_sd, k_arr)
+            structural = a_ * (k_arr**2)  # Structural noise: a·k²
+            quantum = b_ * k_arr           # Quantum noise: b·k
+            electronic = c_ * np.ones_like(k_arr)  # Electronic noise: c (constant)
 
-            fig3, ax3 = plt.subplots()
-            ax3.scatter(k_arr, y_arr, label='SD² data')
-            # Sort kerma for smooth curve
+            fig3, ax3 = plt.subplots(figsize=(10, 6))
+            ax3.scatter(k_arr, y_arr, label='SD² data', color='black', s=50, zorder=5)
+            
+            # Sort kerma for smooth curves
             order = np.argsort(k_arr)
-            ax3.plot(k_arr[order], y_fit[order], color='C3', label='quadratic fit')
-            ax3.set_xlabel(r"$k$")
-            ax3.set_ylabel(r"$SD^2$")
-            ax3.legend()
+            ax3.plot(k_arr[order], y_fit[order], color='C3', linewidth=2, label='Total fit: $a·k² + b·k + c$')
+            ax3.plot(k_arr[order], structural[order], '--', color='C0', linewidth=1.5, label=f'Structural: $a·k²$ ({a_:.4g}·k²)')
+            ax3.plot(k_arr[order], quantum[order], '--', color='C2', linewidth=1.5, label=f'Quantum: $b·k$ ({b_:.4g}·k)')
+            ax3.axhline(y=c_, linestyle='--', color='C1', linewidth=1.5, label=f'Electronic: $c$ ({c_:.4g})')
+            
+            ax3.set_xlabel(r"$k$ (μGy)", fontsize=12)
+            ax3.set_ylabel(r"$SD²$", fontsize=12)
+            ax3.legend(loc='best', fontsize=9)
+            ax3.grid(True, alpha=0.3)
             st.pyplot(fig3)
         except Exception as e:
             st.warning(f"Could not display cached SD_norm fit: {e}")

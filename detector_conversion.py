@@ -547,6 +547,104 @@ def display_detector_conversion_section(uploaded_files=None):
             ax3.legend(loc='best', fontsize=9)
             ax3.grid(True, alpha=0.3)
             st.pyplot(fig3)
+            
+            # New plot: SD²/Kerma_real² vs Kerma (input)
+            st.write("**Normalized noise: SD²/k_real² vs Kerma**")
+            st.caption("k_real is the kerma obtained by converting the mean pixel value (MPV) back to kerma using the detector response curve.")
+            try:
+                # Get the prediction function to convert MPV to kerma
+                pred_mpv_fn = cached.get("predict_mpv")
+                if pred_mpv_fn is None:
+                    st.warning("Detector response curve prediction function not available.")
+                else:
+                    # Calculate kerma_real from MPV for each file
+                    kerma_real_vals = []
+                    for rec in results["files"]:
+                        mpv_val = rec.get("mpv")
+                        # Invert the detector response: we need k from m
+                        # For simplicity, use the inverse function we already have
+                        kerma_real = inv_fn(np.array([mpv_val]))[0]
+                        kerma_real_vals.append(kerma_real)
+                    
+                    kerma_real_arr = np.array(kerma_real_vals, dtype=float)
+                    
+                    # Calculate SD²/k_real² for each point (avoid division by zero)
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        y_normalized = y_arr / (kerma_real_arr**2)
+                    
+                    # Filter out invalid values
+                    valid_mask = np.isfinite(y_normalized) & (k_arr > 0) & (kerma_real_arr > 0)
+                    k_input_valid = k_arr[valid_mask]  # Input kerma for x-axis
+                    y_norm_valid = y_normalized[valid_mask]
+                    
+                    if len(k_input_valid) > 0:
+                        # Fit: SD²/k_real² = a + b/k + c/k²
+                        # Polynomial fit in 1/k: y = p[0]*(1/k)² + p[1]*(1/k) + p[2]
+                        k_inv = 1.0 / k_input_valid
+                        p_norm = np.polyfit(k_inv, y_norm_valid, 2)
+                        y_norm_fit = np.polyval(p_norm, k_inv)
+                        
+                        # Extract coefficients: y = p[0]*x² + p[1]*x + p[2] where x = 1/k
+                        # So: SD²/k_real² = p[0]/k² + p[1]/k + p[2]
+                        c_coeff = p_norm[0]  # coefficient of 1/k²
+                        b_coeff = p_norm[1]  # coefficient of 1/k
+                        a_coeff = p_norm[2]  # constant term
+                        
+                        # Calculate R²
+                        ss_res = np.sum((y_norm_valid - y_norm_fit)**2)
+                        ss_tot = np.sum((y_norm_valid - np.mean(y_norm_valid))**2)
+                        r2_norm = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+                        
+                        # Create plot
+                        fig4, ax4 = plt.subplots(figsize=(10, 6))
+                        ax4.scatter(k_input_valid, y_norm_valid, label='SD²/k_real² data', color='black', s=50, zorder=5)
+                        
+                        # Sort for smooth curve
+                        order_norm = np.argsort(k_input_valid)
+                        ax4.plot(k_input_valid[order_norm], y_norm_fit[order_norm], color='C3', linewidth=2, 
+                                label=f'Fit: $a + b/k + c/k²$')
+                        
+                        ax4.set_xlabel(r"$k$ (μGy)", fontsize=12)
+                        ax4.set_ylabel(r"$SD²/k_{\mathrm{real}}²$", fontsize=12)
+                        ax4.legend(loc='best', fontsize=10)
+                        ax4.grid(True, alpha=0.3)
+                        
+                        # Display formula and R²
+                        st.latex(rf"SD²/k_{{\mathrm{{real}}}}² = {a_coeff:.4g} + {b_coeff:.4g}/k + {c_coeff:.4g}/k²")
+                        st.write(f"R² = {r2_norm:.4f}")
+                        
+                        # Compute dominance interval for b/k term (quantum noise)
+                        # For SD²/k_real² = a + b/k + c/k²
+                        # Quantum term b/k dominates over:
+                        # - Structural: a (constant) when b/k > a => k < b/a
+                        # - Electronic: c/k² when b/k > c/k² => k > c/b
+                        # Interval exists if all coefficients positive and c/b < b/a (i.e., b² > a*c)
+                        
+                        abc_norm_positive = (a_coeff > 0) and (b_coeff > 0) and (c_coeff > 0)
+                        if abc_norm_positive:
+                            k_min_norm = c_coeff / b_coeff if b_coeff != 0 else None  # k > c/b
+                            k_max_norm = b_coeff / a_coeff if a_coeff != 0 else None  # k < b/a
+                            
+                            if (k_min_norm is not None) and (k_max_norm is not None):
+                                delta_norm = (b_coeff**2) - (a_coeff * c_coeff)
+                                if np.isclose(delta_norm, 0.0, rtol=1e-10, atol=1e-12):
+                                    st.latex(rf"k_\mathrm{{min}} = k_\mathrm{{max}} = {k_min_norm:.4g}\;\mu\,Gy\quad (b^2 \approx a\cdot c)")
+                                elif delta_norm > 0:
+                                    st.write("Quantum noise dominance interval (normalized fit):")
+                                    st.latex(rf"(k_\mathrm{{min}},\,k_\mathrm{{max}}) = \left({k_min_norm:.4g},\,{k_max_norm:.4g}\right)\;\mu\,Gy")
+                                else:
+                                    st.latex(r"b^2 \le a\cdot c\quad\text{(no quantum dominance interval)}")
+                            else:
+                                st.info("Dominance interval bounds could not be determined.")
+                        else:
+                            st.info("Coefficients a, b, and c are not all positive; dominance interval not computed.")
+                        
+                        st.pyplot(fig4)
+                    else:
+                        st.warning("Not enough valid data points for SD²/k_real² vs Kerma plot.")
+            except Exception as e:
+                st.warning(f"Could not display SD²/k_real² vs Kerma plot: {e}")
+                
         except Exception as e:
             st.warning(f"Could not display cached SD_norm fit: {e}")
 

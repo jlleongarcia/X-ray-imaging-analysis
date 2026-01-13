@@ -240,12 +240,16 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, add
         nps_2d_avg_raw = np.mean(np.stack(nps_2d_list, axis=0), axis=0)
         mean_ref = float(np.mean(mean_pvs))
         nnps_2d_avg = nps_2d_avg_raw / (mean_ref ** 2)
+        
+        # Convert from mm² to μm² for better readability (multiply by 10⁶)
+        nnps_2d_avg_um2 = nnps_2d_avg * 1e6
+        nnps_units = "μm²"
 
         # Total ROI pixels (simplified): area of the large ROI per image times number of analyzed images
         total_roi_pixels = int(selected_big * selected_big * len(nps_2d_list))
 
         # --- 1D NNPS Calculation from averaged 2D NNPS ---
-        nnps_1d_result = noise_power_spectrum_1d(spectrum_2d=nnps_2d_avg)
+        nnps_1d_result = noise_power_spectrum_1d(spectrum_2d=nnps_2d_avg_um2)
 
         # To get the corresponding frequency axis, we do the same radial average
         # on a grid of radial frequencies. This is the most accurate method.
@@ -259,8 +263,20 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, add
         # 3. Apply the same radial average to get the 1D frequency axis
         freqs_nnps1d = radial_average(f_grid)
 
-        # 4. Combine into a single array for charting and interpolation.
+        # 4. Extract x and y components from 2D NNPS (horizontal and vertical profiles through center)
+        center_idx = nnps_2d_avg_um2.shape[0] // 2
+        nnps_x_profile = nnps_2d_avg_um2[center_idx, :]  # horizontal profile (constant y, varying x)
+        nnps_y_profile = nnps_2d_avg_um2[:, center_idx]  # vertical profile (constant x, varying y)
+        
+        # Get positive frequencies only (right half for x, top half for y)
+        freqs_positive = freqs[center_idx:]
+        nnps_x_positive = nnps_x_profile[center_idx:]
+        nnps_y_positive = nnps_y_profile[center_idx:]
+
+        # 5. Combine into a single array for charting and interpolation.
         nnps_data_for_chart = np.array([freqs_nnps1d, nnps_1d_result]).T
+        nnps_x_data_for_chart = np.array([freqs_positive, nnps_x_positive]).T
+        nnps_y_data_for_chart = np.array([freqs_positive, nnps_y_positive]).T
 
         # --- NNPS at specific frecuencies ---
         target_f1 = 0.5  # lp/mm
@@ -284,10 +300,14 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, add
                 "value_1": float(nnps_1d_at_f1),
                 "target_f2": float(target_f2),
                 "value_2": float(nnps_1d_at_f2),
+                "units": nnps_units,
             },
             "NNPS_1D_chart_data": nnps_data_for_chart,
+            "NNPS_X_chart_data": nnps_x_data_for_chart,
+            "NNPS_Y_chart_data": nnps_y_data_for_chart,
             "x_axis_unit_nps": x_axis_unit_nps,
             "domain_used": domain_used,
+            "nnps_units": nnps_units,
             "used_images": int(len(nps_2d_list)),
             "total_roi_pixels": total_roi_pixels,
         }
@@ -401,12 +421,67 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         else:
             st.caption(f"Total ROI pixels ~ {million_equiv:.2f} million (meets/exceeds 4 million guideline).")
 
-    # ---- Create the Altair chart ----
-    chart = alt.Chart(df_nnps).mark_line(clip=True).encode(
+    # ---- Create the Altair chart with x and y components ----
+    # Prepare combined dataframe for legend and unified plotting
+    if "NNPS_X_chart_data" in nps_results_dict and "NNPS_Y_chart_data" in nps_results_dict:
+        nnps_x_data = nps_results_dict["NNPS_X_chart_data"]
+        nnps_y_data = nps_results_dict["NNPS_Y_chart_data"]
+        
+        # Create combined dataframe with component labels
+        df_1d = df_nnps.copy()
+        df_1d['Component'] = '1D Radial'
+        df_1d['NNPS'] = df_1d['NNPS_1D']
+        
+        df_x = pd.DataFrame(nnps_x_data, columns=[x_axis_unit_nps, 'NNPS'])
+        df_x['Component'] = 'X-component'
+        
+        df_y = pd.DataFrame(nnps_y_data, columns=[x_axis_unit_nps, 'NNPS'])
+        df_y['Component'] = 'Y-component'
+        
+        df_combined = pd.concat([
+            df_1d[[x_axis_unit_nps, 'NNPS', 'Component']],
+            df_x,
+            df_y
+        ], ignore_index=True)
+    else:
+        # Fallback to 1D only
+        df_combined = df_nnps.copy()
+        df_combined['Component'] = '1D Radial'
+        df_combined['NNPS'] = df_combined['NNPS_1D']
+    
+    # Get NNPS units from results
+    nnps_units = nps_results_dict.get('nnps_units', 'μm²')
+    
+    # Create the chart with legend
+    base_chart = alt.Chart(df_combined).mark_line(clip=True).encode(
         x=alt.X(x_axis_unit_nps, scale=alt.Scale(domainMax=nyquist_freq)),
-        y='NNPS_1D'
+        y=alt.Y('NNPS', title=f'NNPS ({nnps_units})'),
+        color=alt.Color(
+            'Component:N',
+            scale=alt.Scale(
+                domain=['1D Radial', 'X-component', 'Y-component'],
+                range=['#1f77b4', '#ff7f0e', '#2ca02c']
+            ),
+            legend=alt.Legend(title="NNPS Component")
+        ),
+        strokeDash=alt.StrokeDash(
+            'Component:N',
+            scale=alt.Scale(
+                domain=['1D Radial', 'X-component', 'Y-component'],
+                range=[[], [5, 5], [2, 2]]
+            ),
+            legend=None  # Don't show stroke dash in legend, only color
+        ),
+        strokeWidth=alt.StrokeWidth(
+            'Component:N',
+            scale=alt.Scale(
+                domain=['1D Radial', 'X-component', 'Y-component'],
+                range=[2, 1.5, 1.5]
+            ),
+            legend=None
+        )
     ).properties(
-        title='Radial Average of Normalized Noise Power Spectrum (NNPS)'
+        title='Normalized Noise Power Spectrum (NNPS)'
     ).interactive()
 
     # Create a selection that finds the nearest point based on X axis
@@ -419,36 +494,60 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     )
 
     # Transparent selectors to enable the nearest selection across the entire chart width
-    selectors = alt.Chart(df_nnps).mark_point().encode(
+    selectors = alt.Chart(df_combined).mark_point().encode(
         x=x_axis_unit_nps,
         opacity=alt.value(0),
     ).add_params(nearest_selection)
 
-    # Text labels for hover
-    text_source = chart.transform_calculate(
-        hover_text=f"'NNPS: ' + format(datum.NNPS_1D, '.3f')"
-    )
-    text = text_source.mark_text(align='left', dx=7, dy=-7, fontSize=14, fontWeight="normal", stroke='white', strokeWidth=1).encode(
-        text=alt.when(nearest_selection).then(
-            alt.Text('hover_text:N')
-        ).otherwise(
-            alt.value('')
-        ),
+    # Text labels for hover showing all component values at the selected frequency
+    text = alt.Chart(df_combined).mark_text(
+        align='left', 
+        dx=7, 
+        dy=-7, 
+        fontSize=14, 
+        fontWeight="normal", 
+        stroke='white', 
+        strokeWidth=1
+    ).transform_calculate(
+        hover_text="datum.Component + ': ' + format(datum.NNPS, '.4f')"
+    ).encode(
+        x=x_axis_unit_nps,
+        y='NNPS',
+        text=alt.when(nearest_selection).then('hover_text:N').otherwise(alt.value('')),
+        color=alt.Color(
+            'Component:N',
+            scale=alt.Scale(
+                domain=['1D Radial', 'X-component', 'Y-component'],
+                range=['#1f77b4', '#ff7f0e', '#2ca02c']
+            ),
+            legend=None
+        )
     )
 
     # Points to highlight nearest
-    points = chart.mark_circle().encode(
+    points = alt.Chart(df_combined).mark_circle(size=60).encode(
+        x=x_axis_unit_nps,
+        y='NNPS',
+        color=alt.Color(
+            'Component:N',
+            scale=alt.Scale(
+                domain=['1D Radial', 'X-component', 'Y-component'],
+                range=['#1f77b4', '#ff7f0e', '#2ca02c']
+            ),
+            legend=None
+        ),
         opacity=alt.when(nearest_selection).then(alt.value(1)).otherwise(alt.value(0)),
     ).add_params(nearest_selection)
 
-    final_chart = alt.layer(chart, selectors, points, text)
+    final_chart = alt.layer(base_chart, selectors, points, text)
     st.altair_chart(final_chart, use_container_width=True)
 
     # Display the NNPS at target frequency if available
     if "NNPS_at_target_f" in nps_results_dict:
         st.subheader("NNPS at Target Frequencies")
         target_info = nps_results_dict["NNPS_at_target_f"]
+        target_units = target_info.get('units', nnps_units)
         nnps_value_1 = f"{target_info['value_1']:.3f}" if not np.isnan(target_info['value_1']) else "N/A"
         nnps_value_2 = f"{target_info['value_2']:.3f}" if not np.isnan(target_info['value_2']) else "N/A"
-        st.write(f"**NNPS at {target_info['target_f1']:.2f} {x_axis_unit_nps}**: {nnps_value_1}")
-        st.write(f"**NNPS at {target_info['target_f2']:.2f} {x_axis_unit_nps}**: {nnps_value_2}")
+        st.write(f"**NNPS at {target_info['target_f1']:.2f} {x_axis_unit_nps}**: {nnps_value_1} {target_units}")
+        st.write(f"**NNPS at {target_info['target_f2']:.2f} {x_axis_unit_nps}**: {nnps_value_2} {target_units}")

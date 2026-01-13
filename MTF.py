@@ -319,6 +319,9 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     mtf_chart_data_plot = mtf_results.get("mtf_chart_data_plot", mtf_results["mtf_chart_data"])
     df_mtf = pd.DataFrame(mtf_chart_data_plot, columns=["Frequency", "MTF"])
     
+    # Get the actual maximum frequency from the filtered data
+    max_freq_in_data = df_mtf['Frequency'].max() if len(df_mtf) > 0 else 2.5
+    
     # Get plot limit info
     plot_limit = mtf_results.get("plot_limit", "N/A")
     nyquist_freq = mtf_results.get("nyquist_freq", np.nan)
@@ -328,7 +331,9 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         st.caption(f"📊 Plot range limited to {plot_limit:.1f} {mtf_results['x_axis_unit']} ")
     
     chart = alt.Chart(df_mtf).mark_line(clip=True, color='steelblue').encode(
-        x=alt.X('Frequency:Q', title=f'Spatial Frequency ({mtf_results["x_axis_unit"]})'),
+        x=alt.X('Frequency:Q', 
+                title=f'Spatial Frequency ({mtf_results["x_axis_unit"]})',
+                scale=alt.Scale(domain=[0, max_freq_in_data], nice=False, padding=0.2)),
         y=alt.Y('MTF:Q', title='MTF', scale=alt.Scale(domain=[0, 1.05]))
     ).properties(
         title='Modulation Transfer Function (IEC 62220-1-1:2015)',

@@ -118,23 +118,37 @@ def calculate_mtf_metrics(
             mtf50 = np.nan
 
         try:
-            # Interpolate to find frequency at MTF = 0.1
+            # Find the first frequency where MTF drops to 0.1 or below
             if np.any(mtf_values_corrected <= 0.1):
-                mtf10 = np.interp(0.1, mtf_values_corrected[::-1], frequencies_corrected[::-1])
+                # Find the first index where MTF <= 0.1
+                first_index = np.where(mtf_values_corrected <= 0.1)[0][0]
+                mtf10 = frequencies_corrected[first_index]
             else:
                 mtf10 = np.nan
         except Exception:
             mtf10 = np.nan
 
-        # Prepare chart data with corrected values
+        # Calculate plot limits: 0.1 × Nyquist, minimum 2.5 lp/mm
+        nyquist_freq = frequencies_corrected[-1] if len(frequencies_corrected) > 0 else np.nan
+        plot_limit_nyquist = 0.1 * nyquist_freq if np.isfinite(nyquist_freq) else 2.5
+        plot_limit = max(plot_limit_nyquist, 2.5)  # Ensure minimum 2.5 lp/mm
+        
+        # Prepare chart data with corrected values (full range)
         mtf_chart_data = np.column_stack([frequencies_corrected, mtf_values_corrected])
         esf_chart_data = np.column_stack([esf_positions, esf])
         lsf_chart_data = np.column_stack([np.arange(len(lsf)), lsf])
+        
+        # Filter data for plotting (limited range)
+        plot_mask = frequencies_corrected <= plot_limit
+        frequencies_plot = frequencies_corrected[plot_mask]
+        mtf_values_plot = mtf_values_corrected[plot_mask]
+        mtf_chart_data_plot = np.column_stack([frequencies_plot, mtf_values_plot])
 
         return {
             "frequencies": frequencies_corrected.tolist(),
             "mtf_values": mtf_values_corrected.tolist(),
             "mtf_chart_data": mtf_chart_data,
+            "mtf_chart_data_plot": mtf_chart_data_plot,  # Limited range for plotting
             "esf_chart_data": esf_chart_data,
             "lsf_chart_data": lsf_chart_data,
             "x_axis_unit": x_axis_unit,
@@ -142,7 +156,8 @@ def calculate_mtf_metrics(
             "MTF10": float(mtf10) if np.isfinite(mtf10) else "N/A",
             "edge_angle_deg": float(edge_angle_deg),
             "is_vertical": bool(edge_mtf.is_vertical),
-            "nyquist_freq": float(frequencies_corrected[-1]) if len(frequencies_corrected) > 0 else np.nan,
+            "nyquist_freq": float(nyquist_freq) if np.isfinite(nyquist_freq) else np.nan,
+            "plot_limit": float(plot_limit),
             "freq_scale_factor": float(freq_scale_factor),
             "iec_corrections_applied": True,
         }
@@ -300,8 +315,17 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     # MTF Curve
     st.subheader(f"MTF Curve")
     
-    mtf_chart_data_np = mtf_results["mtf_chart_data"]
-    df_mtf = pd.DataFrame(mtf_chart_data_np, columns=["Frequency", "MTF"])
+    # Use limited range data for plotting
+    mtf_chart_data_plot = mtf_results.get("mtf_chart_data_plot", mtf_results["mtf_chart_data"])
+    df_mtf = pd.DataFrame(mtf_chart_data_plot, columns=["Frequency", "MTF"])
+    
+    # Get plot limit info
+    plot_limit = mtf_results.get("plot_limit", "N/A")
+    nyquist_freq = mtf_results.get("nyquist_freq", np.nan)
+    
+    if np.isfinite(nyquist_freq) and isinstance(plot_limit, (int, float)):
+        nyquist_ratio = plot_limit / nyquist_freq
+        st.caption(f"📊 Plot range limited to {plot_limit:.1f} {mtf_results['x_axis_unit']} ")
     
     chart = alt.Chart(df_mtf).mark_line(clip=True, color='steelblue').encode(
         x=alt.X('Frequency:Q', title=f'Spatial Frequency ({mtf_results["x_axis_unit"]})'),
@@ -348,7 +372,7 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     with col2:
         mtf10_val = mtf_results.get('MTF10', 'N/A')
         mtf10_str = f"{mtf10_val:.3f}" if isinstance(mtf10_val, (int, float)) else mtf10_val
-        st.metric("MTF 10%", f"{mtf10_str} {mtf_results['x_axis_unit']}")
+        st.metric("MTF 10% (first)", f"{mtf10_str} {mtf_results['x_axis_unit']}")
     
     with col3:
         nyquist = mtf_results.get('nyquist_freq', np.nan)

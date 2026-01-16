@@ -16,4 +16,4 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-pylinac = { git = "https://github.com/jlleongarcia/pylinac.git", rev = "fed62af89656198d99d95165de371a5e57d953f6" }
+pylinac = { git = "https://github.com/jlleongarcia/pylinac.git", rev = "f911956de63aff09fa9f11ddda6f52963adfe905" }

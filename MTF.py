@@ -2,18 +2,14 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import altair as alt
+import matplotlib.pyplot as plt
 from typing import Optional
+from scipy.ndimage import sobel
 
 try:
     from pylinac.core.mtf import EdgeMTF
 except ImportError:
     EdgeMTF = None
-
-try:
-    from edge_debug import debug_edge_detection, analyze_edge_with_pylinac
-except ImportError:
-    debug_edge_detection = None
-    analyze_edge_with_pylinac = None
 
 
 def _bump_mtf_refresh():
@@ -72,23 +68,24 @@ def calculate_mtf_metrics(
             edge_smoothing=0.0,  # No pre-smoothing per IEC
         )
 
-        # Extract base results from EdgeMTF
+        # Extract base results from EdgeMTF (now with PCA-based edge detection)
         frequencies_raw = edge_mtf.frequencies
         mtf_values_raw = edge_mtf.mtf_values
         esf_positions = edge_mtf.esf_positions
         esf = edge_mtf.esf
         lsf = edge_mtf.lsf
         edge_angle_rad = edge_mtf.edge_angle
-        edge_angle_deg = np.degrees(edge_angle_rad)
+        edge_angle_deg = edge_mtf.edge_angle_deg  # Now absolute value from PCA
+        is_vertical = edge_mtf.is_vertical
+        pca_confidence = edge_mtf.pca_confidence  # New PCA metric
+        edge_points_count = edge_mtf.edge_points_count  # New diagnostic
 
         # --- IEC Correction 1: Frequency axis scaling for oblique projection (1/cos α) ---
         # The edge angle causes frequency axis compression; correct by dividing by cos(α)
-        cos_alpha = np.cos(edge_angle_rad)
-        if abs(cos_alpha) < 1e-6:
-            st.warning("Edge angle near 90°; frequency scaling may be unreliable.")
-            freq_scale_factor = 1.0
+        if is_vertical:
+            freq_scale_factor = np.abs(1.0 / np.sin(edge_angle_rad))
         else:
-            freq_scale_factor = 1.0 / cos_alpha
+            freq_scale_factor = np.abs(1.0 / np.cos(edge_angle_rad))
         
         frequencies_corrected = frequencies_raw * freq_scale_factor
 
@@ -163,7 +160,9 @@ def calculate_mtf_metrics(
             "MTF50": float(mtf50) if np.isfinite(mtf50) else "N/A",
             "MTF10": float(mtf10) if np.isfinite(mtf10) else "N/A",
             "edge_angle_deg": float(edge_angle_deg),
-            "is_vertical": bool(edge_mtf.is_vertical),
+            "is_vertical": bool(is_vertical),
+            "pca_confidence": float(pca_confidence),
+            "edge_points_count": int(edge_points_count),
             "nyquist_freq": float(nyquist_freq) if np.isfinite(nyquist_freq) else np.nan,
             "plot_limit": float(plot_limit),
             "freq_scale_factor": float(freq_scale_factor),
@@ -186,15 +185,22 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     
     This analysis calculates MTF using the slanted edge technique:
     1. Select a rectangular ROI containing a sharp edge (contrast phantom)
-    2. The edge should be slanted 3-5° from vertical or horizontal
+    2. The edge should be slanted at optimal angles:
+       - **Vertical edges**: 85-87° (3-5° from vertical)
+       - **Horizontal edges**: 3-5° (from horizontal)
     3. Edge Spread Function (ESF) is extracted perpendicular to the edge
     4. Line Spread Function (LSF) is derived by differentiating the ESF
     5. MTF is calculated via Fourier Transform of the LSF
     
+    **PCA Edge Detection:**
+    - Uses Principal Component Analysis for robust, noise-resistant edge angle determination
+    - Provides confidence metric for edge quality assessment
+    - Works with absolute angle values (no sign confusion)
+
     **Requirements:**
     - Edge phantom with sharp transition (high contrast)
-    - Edge angle 3-5° from vertical/horizontal for optimal accuracy
-    - Sufficient ROI size (at least 100x100 pixels recommended)
+    - Edge angle within optimal range for accurate results
+    - Sufficient ROI size (at least 100×100 pixels recommended)
     """)
 
     # Initialize session state
@@ -282,14 +288,6 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         roi_norm = (edge_roi - edge_roi.min()) / (edge_roi.max() - edge_roi.min() + 1e-9)
         st.image(roi_norm, caption="Selected Edge ROI (normalized)", use_container_width=True)
 
-    # Edge Detection Debugging
-    with st.expander("🔍 Edge Detection Debugging", expanded=False):
-        
-        if st.button("🔬 Analyze Edge Detection", key="debug_edge_detection"):
-            if debug_edge_detection is not None:
-                with st.spinner("Analyzing edge detection..."):
-                    debug_info = debug_edge_detection(edge_roi, show_plots=True)
-
     # Add button to trigger MTF calculation
     st.markdown("---")
     if not st.button("Calculate MTF", key="mtf_calculate_button"):
@@ -297,7 +295,7 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         return
 
     # Calculate MTF
-    with st.spinner("Calculating IEC-compliant MTF with spectral and angle corrections..."):
+    with st.spinner("Calculating IEC-compliant MTF with PCA edge detection and spectral corrections..."):
         mtf_results = calculate_mtf_metrics(
             edge_roi=edge_roi,
             pixel_spacing=pixel_spacing_avg,
@@ -316,6 +314,7 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     # Display edge detection info
     edge_angle = mtf_results.get("edge_angle_deg", np.nan)
     is_vertical = mtf_results.get("is_vertical", False)
+    pca_confidence = mtf_results.get("pca_confidence", np.nan)
     orientation = "vertical" if is_vertical else "horizontal"
     freq_scale = mtf_results.get("freq_scale_factor", 1.0)
     
@@ -325,8 +324,21 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     if mtf_results.get("iec_corrections_applied"):
         st.caption(f"✓ IEC corrections applied: Frequency scaling (1/cos α = {freq_scale:.4f}) | Spectral smoothing correction")
     
-    if abs(edge_angle) > 10:
-        st.warning(f"Edge angle ({edge_angle:.1f}°) is outside the recommended 3-5° range. Consider adjusting ROI or phantom alignment.")
+    # Angle validation with orientation-specific warnings
+    if is_vertical:
+        if edge_angle < 85 or edge_angle > 87:
+            st.warning(f"⚠️ Vertical edge angle ({edge_angle:.1f}°) outside optimal range (85-87°). Consider adjusting ROI or phantom alignment.")
+        else:
+            st.success(f"✅ Vertical edge angle ({edge_angle:.1f}°) is within optimal range.")
+    else:
+        if edge_angle < 3 or edge_angle > 5:
+            st.warning(f"⚠️ Horizontal edge angle ({edge_angle:.1f}°) outside optimal range (3-5°). Consider adjusting ROI or phantom alignment.")
+        else:
+            st.success(f"✅ Horizontal edge angle ({edge_angle:.1f}°) is within optimal range.")
+    
+    # PCA confidence warning
+    if pca_confidence < 2.0:
+        st.warning(f"⚠️ Low PCA confidence ({pca_confidence:.2f}). Edge may be poorly defined or noisy.")
 
     # MTF Curve
     st.subheader(f"MTF Curve")
@@ -352,7 +364,7 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                 scale=alt.Scale(domain=[0, max_freq_in_data], nice=False, padding=0.2)),
         y=alt.Y('MTF:Q', title='MTF', scale=alt.Scale(domain=[0, 1.05]))
     ).properties(
-        title='Modulation Transfer Function (IEC 62220-1-1:2015)',
+        title='Modulation Transfer Function (IEC 62220-1-1:2015 with PCA Edge Detection)',
         height=400
     ).interactive()
 

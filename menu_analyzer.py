@@ -356,39 +356,8 @@ def main_app_ui():
             ["Convert to DICOM", "Flat Panel Analysis"],
             help="Choose the analysis type or utility tool"
         )
-        
-        if analysis_category == "Flat Panel Analysis":
-            # Sub-category tabs for flat panel analyses
-            tab_detector, tab_uniformity, tab_nps, tab_mtf, tab_contrast = st.tabs([
-                "Detector Conversion", "Uniformity", "NPS", "MTF", "Contrast"
-            ])
 
-            with tab_detector:
-                # Prefer the sidebar-uploaded RAW/STD files if available; pass them to the detector UI so re-upload is not needed
-                raw_sidebar_files = None
-                if uploaded_files:
-                    # Use the detected raw files from content analysis
-                    raw_sidebar_files = raw_files or None
-
-                detector_results = display_detector_conversion_section(uploaded_files=raw_sidebar_files)
-                # If the detector module returned structured output, persist it to session state
-                if detector_results is not None:
-                    st.session_state['detector_conv'] = detector_results
-
-            with tab_uniformity:
-                display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
-
-            with tab_nps:
-                # Pass all files uploaded in the sidebar into NPS so it can use them all
-                display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, uploaded_files=uploaded_files)
-
-            with tab_mtf:
-                display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
-
-            with tab_contrast:
-                display_threshold_contrast_section(pixel_spacing_row, pixel_spacing_col)
-        
-        elif analysis_category == "Convert to DICOM":
+        if analysis_category == "Convert to DICOM":
             st.subheader("🏥 Convert Image to DICOM Format")
             st.markdown("""
             Convert your raw or standard image file to DICOM format with customizable metadata.
@@ -418,6 +387,37 @@ def main_app_ui():
                     st.error(f"❌ DICOM generation failed: {e}")
                     import traceback
                     st.code(traceback.format_exc())
+        
+        elif analysis_category == "Flat Panel Analysis":
+            # Sub-category tabs for flat panel analyses
+            tab_detector, tab_uniformity, tab_nps, tab_mtf, tab_contrast = st.tabs([
+                "Detector Conversion", "Uniformity", "NPS", "MTF", "Contrast"
+            ])
+
+            with tab_detector:
+                # Prefer the sidebar-uploaded RAW/STD files if available; pass them to the detector UI so re-upload is not needed
+                raw_sidebar_files = None
+                if uploaded_files:
+                    # Use the detected raw files from content analysis
+                    raw_sidebar_files = raw_files or None
+
+                detector_results = display_detector_conversion_section(uploaded_files=raw_sidebar_files)
+                # If the detector module returned structured output, persist it to session state
+                if detector_results is not None:
+                    st.session_state['detector_conv'] = detector_results
+
+            with tab_uniformity:
+                display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
+
+            with tab_nps:
+                # Pass all files uploaded in the sidebar into NPS so it can use them all
+                display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, uploaded_files=uploaded_files)
+
+            with tab_mtf:
+                display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
+
+            with tab_contrast:
+                display_threshold_contrast_section(pixel_spacing_row, pixel_spacing_col)
 
     elif uploaded_files: # This handles the comparison case where image_array is not pre-loaded
         # If files are uploaded but no single image array was created, it's the comparison tool case.

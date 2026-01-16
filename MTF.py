@@ -284,77 +284,11 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
 
     # Edge Detection Debugging
     with st.expander("🔍 Edge Detection Debugging", expanded=False):
-        st.markdown("""
-        **Use this tool to diagnose edge detection orientation issues.**
-        
-        If you're experiencing problems with:
-        - Vertical edges being detected as horizontal
-        - Horizontal edges being detected as vertical
-        - "Weird" MTF plots
-        
-        Click below to analyze the edge detection algorithm behavior.
-        """)
         
         if st.button("🔬 Analyze Edge Detection", key="debug_edge_detection"):
             if debug_edge_detection is not None:
                 with st.spinner("Analyzing edge detection..."):
                     debug_info = debug_edge_detection(edge_roi, pixel_spacing_avg, show_plots=True)
-                    
-                    # Display debug information
-                    st.write("**Edge Detection Analysis Results:**")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Edge Points Found", debug_info.get('num_edge_points', 'N/A'))
-                        st.metric("Line Fit R²", f"{debug_info.get('line_fit_r_squared', 0):.3f}")
-                    
-                    with col2:
-                        st.metric("Edge Angle", f"{debug_info.get('angle_deg', 0):.1f}°")
-                        st.metric("Edge Slope", f"{debug_info.get('slope', 0):.3f}")
-                    
-                    with col3:
-                        original_result = debug_info.get('is_vertical_original', False)
-                        consensus_result = debug_info.get('is_vertical_consensus', False)
-                        st.metric("Original Detection", "Vertical" if original_result else "Horizontal")
-                        st.metric("Consensus Detection", "Vertical" if consensus_result else "Horizontal")
-                    
-                    # Show warning if methods disagree
-                    if original_result != consensus_result:
-                        st.error(f"""
-                        ⚠️ **Edge Detection Inconsistency Detected!**
-                        
-                        - Original pylinac method: **{'Vertical' if original_result else 'Horizontal'}**
-                        - Consensus of multiple methods: **{'Vertical' if consensus_result else 'Horizontal'}**
-                        
-                        This explains why your edge detection is not working correctly.
-                        The pylinac EdgeMTF class may have a bug in its orientation detection logic.
-                        """)
-                        
-                        st.markdown("""
-                        **Recommended Solutions:**
-                        1. **Try a different ROI**: Select a ROI that captures the edge more clearly
-                        2. **Improve image quality**: Ensure good contrast between edge regions
-                        3. **Check edge angle**: Make sure the edge is slanted 3-5° from vertical/horizontal
-                        4. **Consider custom implementation**: The pylinac EdgeMTF class may need fixing
-                        """)
-                    else:
-                        st.success("✅ Edge detection methods are consistent.")
-                
-                # Also analyze with pylinac directly for comparison
-                st.markdown("**Pylinac EdgeMTF Analysis:**")
-                pylinac_results = analyze_edge_with_pylinac(edge_roi, pixel_spacing_avg)
-                
-                if pylinac_results.get('success'):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Pylinac Edge Angle", f"{pylinac_results.get('edge_angle_deg', 0):.1f}°")
-                    with col2:
-                        st.metric("Pylinac Orientation", "Vertical" if pylinac_results.get('is_vertical') else "Horizontal")
-                else:
-                    st.error(f"Pylinac analysis failed: {pylinac_results.get('error')}")
-                    
-            else:
-                st.error("Edge debugging module not available. Please check edge_debug.py import.")
 
     # Add button to trigger MTF calculation
     st.markdown("---")

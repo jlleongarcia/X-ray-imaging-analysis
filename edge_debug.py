@@ -12,7 +12,7 @@ import streamlit as st
 import pandas as pd
 
 
-def debug_edge_detection(edge_roi_array, pixel_spacing, show_plots=True):
+def debug_edge_detection(edge_roi_array, show_plots=True):
     """
     Debug edge detection to understand orientation issues.
     
@@ -20,8 +20,6 @@ def debug_edge_detection(edge_roi_array, pixel_spacing, show_plots=True):
     ----------
     edge_roi_array : np.ndarray
         2D array containing the edge ROI
-    pixel_spacing : float
-        Pixel spacing in mm
     show_plots : bool
         Whether to display debug plots
         
@@ -186,7 +184,7 @@ def analyze_edge_simple(edge_roi_array, pixel_spacing):
     """
     try:
         # Perform robust edge detection analysis
-        debug_info = debug_edge_detection(edge_roi_array, pixel_spacing, show_plots=False)
+        debug_info = debug_edge_detection(edge_roi_array, show_plots=False)
         
         results = {
             # Use PCA results

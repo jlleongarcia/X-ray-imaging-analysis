@@ -288,7 +288,7 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         if st.button("🔬 Analyze Edge Detection", key="debug_edge_detection"):
             if debug_edge_detection is not None:
                 with st.spinner("Analyzing edge detection..."):
-                    debug_info = debug_edge_detection(edge_roi, pixel_spacing_avg, show_plots=True)
+                    debug_info = debug_edge_detection(edge_roi, show_plots=True)
 
     # Add button to trigger MTF calculation
     st.markdown("---")

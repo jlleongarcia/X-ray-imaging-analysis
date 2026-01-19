@@ -417,7 +417,7 @@ def main_app_ui():
                 display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
 
             with tab_contrast:
-                display_threshold_contrast_section(pixel_spacing_row, pixel_spacing_col)
+                display_threshold_contrast_section(image_array, pixel_spacing_row, pixel_spacing_col)
 
     elif uploaded_files: # This handles the comparison case where image_array is not pre-loaded
         # If files are uploaded but no single image array was created, it's the comparison tool case.

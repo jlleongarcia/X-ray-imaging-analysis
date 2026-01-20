@@ -607,6 +607,7 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
         # Apply detector conversion if available (convert pixel values to kerma)
         detector_conversion_fn = st.session_state.get('detector_conversion', None)
         
+        is_kerma_image = False
         if detector_conversion_fn is not None:
             st.info("✓ Using detector conversion function to convert pixel values to Kerma (μGy)")
             try:
@@ -614,7 +615,8 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
                 predict_mpv = detector_conversion_fn.get('predict_mpv')
                 if predict_mpv is not None:
                     image = predict_mpv(image_array.flatten()).reshape(image_array.shape)
-                    st.success("Image converted to Kerma values")
+                    is_kerma_image = True
+                    st.success(f"Image converted to Kerma values")
                 else:
                     st.warning("Detector conversion function not properly loaded. Using raw pixel values.")
                     image = image_array.astype(np.float64)
@@ -629,6 +631,10 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
         try:
             
             st.success(f"✓ Image loaded: {image.shape[0]} × {image.shape[1]} pixels")
+            if is_kerma_image:
+                st.caption("Working with Kerma image (μGy). All values will be in Kerma units.")
+            else:
+                st.caption("Working with raw pixel values.")
             
             st.markdown("---")
             
@@ -709,6 +715,11 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
             
             if st.button("🔬 Calculate C_TSM & Fit Curve", type="primary"):
                 with st.spinner("Extracting central ROI, calculating threshold contrast, and fitting curve..."):
+                    
+                    # Display image info for debugging
+                    st.info(f"📊 Image shape: {image.shape}, Value range: [{image.min():.2f}, {image.max():.2f}]" + 
+                            (" μGy" if is_kerma_image else " (pixel values)"))
+                    
                     # Generate contrast-detail curve
                     df_results, normalization_value = generate_contrast_detail_curve(
                         image, subroi_sizes, num_subrois, pixel_spacing, central_roi_size, norm_roi_size
@@ -724,117 +735,96 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
                             df_results['c_tsm_normalized'].values
                         )
                         
-                        # Store results in session state
-                        st.session_state['tcdd_results'] = {
-                            'df_results': df_results,
-                            'normalization_value': normalization_value,
-                            'fit_params': fit_params,
-                            'fit_quality': fit_quality,
-                            'norm_roi_size': norm_roi_size
-                        }
-            
-            # Display results if they exist in session state
-            if 'tcdd_results' in st.session_state and st.session_state['tcdd_results'] is not None:
-                results = st.session_state['tcdd_results']
-                df_results = results['df_results']
-                normalization_value = results['normalization_value']
-                fit_params = results['fit_params']
-                fit_quality = results['fit_quality']
-                norm_roi_size = results['norm_roi_size']
-                
-                st.success(f"✓ Analysis complete for {len(df_results)} subROI sizes")
-                
-                if fit_params is not None:
-                    a, b, c = fit_params
-                    st.success(f"✓ Curve fitted successfully: C_th(d) = {c:.4f}/d² + {b:.4f}/d + {a:.4f}")
-                    st.metric("R² (goodness of fit)", f"{fit_quality['r_squared']:.4f}")
-                
-                # Display normalization info
-                st.info(f"**Normalization value** (mean of central {norm_roi_size}×{norm_roi_size} ROI): {normalization_value:.2f}")
-                
-                st.markdown("---")
-                
-                # Display results table
-                st.markdown("---")
-                
-                # Display results table
-                st.subheader("Results Table")
-                
-                # Format table for display
-                display_df = df_results.copy()
-                display_df['diameter_mm'] = display_df['diameter_mm'].round(3)
-                display_df['c_tsm_normalized'] = display_df['c_tsm_normalized'].round(4)
-                display_df['sigma_chi_normalized'] = display_df['sigma_chi_normalized'].round(4)
-                
-                st.dataframe(
-                    display_df,
-                    column_config={
-                        "subroi_size_pixels": "SubROI Size (px)",
-                        "n_subrois": "# SubROIs",
-                        "diameter_mm": "Diameter d (mm)",
-                        "c_tsm": "C_TSM (raw)",
-                        "c_tsm_normalized": "C_TSM (%)",
-                        "sigma_chi": "σχ (raw)",
-                        "sigma_chi_normalized": "σχ (%)"
-                    },
-                    hide_index=True,
-                    use_container_width=True
-                )
-                
-                # Add fitted values to download
-                if fit_params is not None:
-                    a, b, c = fit_params
-                    df_export = df_results.copy()
-                    df_export['c_th_fitted'] = contrast_threshold_model(
-                        df_export['diameter_mm'].values, a, b, c
-                    )
-                    df_export['residual'] = df_export['c_tsm_normalized'] - df_export['c_th_fitted']
-                else:
-                    df_export = df_results.copy()
-                
-                # Download CSV
-                csv = df_export.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download Results (CSV)",
-                    data=csv,
-                    file_name="tcdd_statistical_method_results.csv",
-                    mime="text/csv",
-                    key="download_csv_tcdd"
-                )
-                
-                st.markdown("---")
-                
-                # Plot contrast-detail curve
-                st.subheader("Contrast-Detail Curve with Fitted Model")
-                fig_curve = plot_contrast_detail_curve(df_results, fit_params, fit_quality)
-                st.pyplot(fig_curve)
-                
-                # Download plot
-                buf = io.BytesIO()
-                fig_curve.savefig(buf, format='png', dpi=300, bbox_inches='tight')
-                buf.seek(0)
-                st.download_button(
-                    label="📥 Download Plot (PNG)",
-                    data=buf,
-                    file_name="contrast_detail_curve.png",
-                    mime="image/png",
-                    key="download_plot_tcdd"
-                )
-                plt.close()
-                
-                st.markdown("---")
-                
-                # Display fitted parameters
-                if fit_params is not None:
-                    st.subheader("Fitted Model Parameters")
-                    col_p1, col_p2, col_p3 = st.columns(3)
-                    
-                    with col_p1:
-                        st.metric("Parameter a", f"{a:.6f}")
-                    with col_p2:
-                        st.metric("Parameter b", f"{b:.6f}")
-                    with col_p3:
-                        st.metric("Parameter c", f"{c:.6f}")
+                        units = "μGy" if is_kerma_image else "PV"
+                        
+                        st.success(f"✓ Analysis complete for {len(df_results)} subROI sizes")
+                        
+                        if fit_params is not None:
+                            a, b, c = fit_params
+                            st.success(f"✓ Curve fitted successfully: C_th(d) = {c:.4f}/d² + {b:.4f}/d + {a:.4f}")
+                            st.metric("R² (goodness of fit)", f"{fit_quality['r_squared']:.4f}")
+                        
+                        # Display normalization info
+                        st.info(f"**Normalization value** (mean of central {norm_roi_size}×{norm_roi_size} ROI): {normalization_value:.2f} {units}")
+                        
+                        st.markdown("---")
+                        
+                        # Display results table
+                        st.subheader("Results Table")
+                        
+                        # Format table for display
+                        display_df = df_results.copy()
+                        display_df['diameter_mm'] = display_df['diameter_mm'].round(3)
+                        display_df['c_tsm_normalized'] = display_df['c_tsm_normalized'].round(4)
+                        display_df['sigma_chi_normalized'] = display_df['sigma_chi_normalized'].round(4)
+                        
+                        st.dataframe(
+                            display_df,
+                            column_config={
+                                "subroi_size_pixels": "SubROI Size (px)",
+                                "n_subrois": "# SubROIs",
+                                "diameter_mm": "Diameter d (mm)",
+                                "c_tsm": f"C_TSM ({units})",
+                                "c_tsm_normalized": "C_TSM (%)",
+                                "sigma_chi": f"σχ ({units})",
+                                "sigma_chi_normalized": "σχ (%)"
+                            },
+                            hide_index=True,
+                            use_container_width=True
+                        )
+                        
+                        # Add fitted values to download
+                        if fit_params is not None:
+                            a, b, c = fit_params
+                            df_export = df_results.copy()
+                            df_export['c_th_fitted'] = contrast_threshold_model(
+                                df_export['diameter_mm'].values, a, b, c
+                            )
+                            df_export['residual'] = df_export['c_tsm_normalized'] - df_export['c_th_fitted']
+                        else:
+                            df_export = df_results.copy()
+                        
+                        # Download CSV
+                        csv = df_export.to_csv(index=False)
+                        st.download_button(
+                            label="📥 Download Results (CSV)",
+                            data=csv,
+                            file_name="tcdd_statistical_method_results.csv",
+                            mime="text/csv"
+                        )
+                        
+                        st.markdown("---")
+                        
+                        # Plot contrast-detail curve
+                        st.subheader("Contrast-Detail Curve with Fitted Model")
+                        fig_curve = plot_contrast_detail_curve(df_results, fit_params, fit_quality)
+                        st.pyplot(fig_curve)
+                        
+                        # Download plot
+                        buf = io.BytesIO()
+                        fig_curve.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+                        buf.seek(0)
+                        st.download_button(
+                            label="📥 Download Plot (PNG)",
+                            data=buf,
+                            file_name="contrast_detail_curve.png",
+                            mime="image/png"
+                        )
+                        plt.close()
+                        
+                        st.markdown("---")
+                        
+                        # Display fitted parameters
+                        if fit_params is not None:
+                            st.subheader("Fitted Model Parameters")
+                            col_p1, col_p2, col_p3 = st.columns(3)
+                            
+                            with col_p1:
+                                st.metric("Parameter a", f"{a:.6f}")
+                            with col_p2:
+                                st.metric("Parameter b", f"{b:.6f}")
+                            with col_p3:
+                                st.metric("Parameter c", f"{c:.6f}")
                     
                     st.latex(r"C_{th}(d) = \frac{" + f"{c:.4f}" + r"}{d^2} + \frac{" + f"{b:.4f}" + r"}{d} + " + f"{a:.4f}")
                     

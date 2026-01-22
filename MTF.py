@@ -314,7 +314,6 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     # Display edge detection info
     edge_angle = mtf_results.get("edge_angle_deg", np.nan)
     is_vertical = mtf_results.get("is_vertical", False)
-    pca_confidence = mtf_results.get("pca_confidence", np.nan)
     orientation = "vertical" if is_vertical else "horizontal"
     freq_scale = mtf_results.get("freq_scale_factor", 1.0)
     
@@ -322,7 +321,10 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     
     # Show IEC corrections applied
     if mtf_results.get("iec_corrections_applied"):
+        pca_confidence = mtf_results.get("pca_confidence", np.nan)
         st.caption(f"✓ IEC corrections applied: Frequency scaling (1/cos α = {freq_scale:.4f}) | Spectral smoothing correction")
+        if pca_confidence < 2.0:
+            st.warning(f"⚠️ Low PCA confidence ({pca_confidence:.2f}). Edge may be poorly defined or noisy.")
     
     # Angle validation with orientation-specific warnings
     if is_vertical:
@@ -335,10 +337,6 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
             st.warning(f"⚠️ Horizontal edge angle ({edge_angle:.1f}°) outside optimal range (3-5°). Consider adjusting ROI or phantom alignment.")
         else:
             st.success(f"✅ Horizontal edge angle ({edge_angle:.1f}°) is within optimal range.")
-    
-    # PCA confidence warning
-    if pca_confidence < 2.0:
-        st.warning(f"⚠️ Low PCA confidence ({pca_confidence:.2f}). Edge may be poorly defined or noisy.")
 
     # MTF Curve
     st.subheader(f"MTF Curve")

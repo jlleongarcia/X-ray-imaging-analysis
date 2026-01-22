@@ -168,9 +168,6 @@ def main_app_ui():
             raw_file = selected_raw
             dicom_filename = raw_file.name
 
-            st.sidebar.subheader("RAW/STD Image Parameters")
-            st.sidebar.info("Please provide the details for your RAW or STD image file.")
-
             # Read bytes once for detection and later processing
             raw_data = raw_file.getvalue()
 

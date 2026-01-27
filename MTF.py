@@ -108,7 +108,7 @@ def calculate_mtf_metrics(
             mtf_values_corrected = mtf_values_raw / sinc_correction
         
         # Clip MTF to valid range [0, 1] after correction
-        mtf_values_corrected = np.clip(mtf_values_corrected, 0.0, 1.0)
+        # mtf_values_corrected = np.clip(mtf_values_corrected, 0.0, 1.0)
 
         # Calculate MTF50 and MTF10 from corrected MTF
         try:
@@ -133,10 +133,10 @@ def calculate_mtf_metrics(
         except Exception:
             mtf10 = np.nan
 
-        # Calculate plot limits: 0.1 × Nyquist, minimum 2.5 lp/mm
+        # Calculate plot limits: 0.1 × Nyquist, minimum 5 lp/mm
         nyquist_freq = frequencies_corrected[-1] if len(frequencies_corrected) > 0 else np.nan
         plot_limit_nyquist = 0.1 * nyquist_freq if np.isfinite(nyquist_freq) else 2.5
-        plot_limit = max(plot_limit_nyquist, 2.5)  # Ensure minimum 2.5 lp/mm
+        plot_limit = max(plot_limit_nyquist, 5.0)  # Ensure minimum 5 lp/mm
         
         # Prepare chart data with corrected values (full range)
         mtf_chart_data = np.column_stack([frequencies_corrected, mtf_values_corrected])
@@ -346,7 +346,7 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     df_mtf = pd.DataFrame(mtf_chart_data_plot, columns=["Frequency", "MTF"])
     
     # Get the actual maximum frequency from the filtered data
-    max_freq_in_data = df_mtf['Frequency'].max() if len(df_mtf) > 0 else 2.5
+    max_freq_in_data = df_mtf['Frequency'].max() if len(df_mtf) > 0 else 5
     
     # Get plot limit info
     plot_limit = mtf_results.get("plot_limit", "N/A")

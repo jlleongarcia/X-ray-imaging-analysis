@@ -38,67 +38,60 @@ def calculate_mtf_metrics(edge_roi: np.ndarray, pixel_spacing: float) -> dict:
         return {"MTF_Status": "Error: EdgeMTF not available"}
 
     try:
+        # EdgeMTF now uses Hough Transform internally for robust angle detection
+        st.caption("🔍 **Edge Detection: Hough Transform** (robust to ROI size/shape)")
+        
+        # Run EdgeMTF with built-in Hough Transform angle detection
         edge_mtf = EdgeMTF(edge_data=edge_roi, pixel_size=pixel_spacing, edge_smoothing=0.0)
-
-        # Extract base results
-        frequencies_raw = edge_mtf.frequencies
-        mtf_values_raw = edge_mtf.mtf_values
+        
+        # Extract diagnostic information from EdgeMTF's Hough Transform detection
+        edge_angle_deg = edge_mtf.edge_angle_deg
+        is_vertical = edge_mtf.is_vertical
+        hough_confidence = edge_mtf.hough_confidence
+        edge_strength = edge_mtf.edge_strength
+        edge_points_count = edge_mtf.edge_points_count
+        
+        # Display Hough detection results
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Detected Angle", f"{edge_angle_deg:.2f}°")
+        with col2:
+            st.metric("Edge Type", "Vertical" if is_vertical else "Horizontal")
+        with col3:
+            st.metric("Confidence", f"{hough_confidence:.1%}")
+        with col4:
+            st.metric("Edge Strength", f"{edge_strength:.3f}")
+        
+        # Extract MTF data (already IEC-compliant from EdgeMTF)
+        frequencies = edge_mtf.frequencies
+        mtf_values = edge_mtf.mtf_values
         esf_positions = edge_mtf.esf_positions
         esf = edge_mtf.esf
         lsf = edge_mtf.lsf
-        edge_angle_rad = edge_mtf.edge_angle
-        edge_angle_deg = edge_mtf.edge_angle_deg
-        is_vertical = edge_mtf.is_vertical
-        pca_confidence = edge_mtf.pca_confidence
-        edge_points_count = edge_mtf.edge_points_count
 
-        # IEC Correction 1: Frequency axis scaling
-        if is_vertical:
-            freq_scale_factor = np.abs(1.0 / np.sin(edge_angle_rad))
-        else:
-            freq_scale_factor = np.abs(1.0 / np.cos(edge_angle_rad))
-        
-        frequencies_corrected = frequencies_raw * freq_scale_factor
-
-        # IEC Correction 2: Spectral smoothing correction
-        if len(esf_positions) > 1:
-            delta_x = np.mean(np.diff(esf_positions)) * pixel_spacing
-        else:
-            delta_x = pixel_spacing
-        
-        with np.errstate(divide='ignore', invalid='ignore'):
-            sinc_arg = np.pi * frequencies_corrected * delta_x
-            sinc_correction = np.sinc(sinc_arg / np.pi)
-            sinc_correction = np.where(np.abs(sinc_correction) < 1e-6, 1.0, sinc_correction)
-            mtf_values_corrected = mtf_values_raw / sinc_correction
-
-        # Calculate MTF50 and MTF10
+        # Calculate MTF50 and MTF10 using EdgeMTF's built-in method
         try:
-            mtf50 = frequencies_corrected[np.where(mtf_values_corrected <= 0.5)[0][0]] if np.any(mtf_values_corrected <= 0.5) else np.nan
+            mtf50 = edge_mtf.spatial_resolution(50)
         except Exception:
             mtf50 = np.nan
 
         try:
-            mtf10 = frequencies_corrected[np.where(mtf_values_corrected <= 0.1)[0][0]] if np.any(mtf_values_corrected <= 0.1) else np.nan
+            mtf10 = edge_mtf.spatial_resolution(10)
         except Exception:
             mtf10 = np.nan
 
-        # Plot limits
-        nyquist_freq = frequencies_corrected[-1] if len(frequencies_corrected) > 0 else np.nan
-        plot_limit = max(0.1 * nyquist_freq if np.isfinite(nyquist_freq) else 2.5, 5.0)
-        
-        # Prepare chart data
-        mtf_chart_data = np.column_stack([frequencies_corrected, mtf_values_corrected])
+        # Prepare chart data (plot all data points without filtering)
+        nyquist_freq = frequencies[-1] if len(frequencies) > 0 else np.nan
+        mtf_chart_data = np.column_stack([frequencies, mtf_values])
         esf_chart_data = np.column_stack([esf_positions, esf])
         lsf_chart_data = np.column_stack([np.arange(len(lsf)), lsf])
         
-        # Filter data for plotting
-        plot_mask = frequencies_corrected <= plot_limit
-        mtf_chart_data_plot = np.column_stack([frequencies_corrected[plot_mask], mtf_values_corrected[plot_mask]])
+        # Use full data for plotting (no limit)
+        mtf_chart_data_plot = mtf_chart_data
 
         return {
-            "frequencies": frequencies_corrected.tolist(),
-            "mtf_values": mtf_values_corrected.tolist(),
+            "frequencies": frequencies.tolist(),
+            "mtf_values": mtf_values.tolist(),
             "mtf_chart_data": mtf_chart_data,
             "mtf_chart_data_plot": mtf_chart_data_plot,
             "esf_chart_data": esf_chart_data,
@@ -108,12 +101,12 @@ def calculate_mtf_metrics(edge_roi: np.ndarray, pixel_spacing: float) -> dict:
             "MTF10": float(mtf10) if np.isfinite(mtf10) else "N/A",
             "edge_angle_deg": float(edge_angle_deg),
             "is_vertical": bool(is_vertical),
-            "pca_confidence": float(pca_confidence),
+            "hough_confidence": float(hough_confidence),
+            "edge_strength": float(edge_strength),
             "edge_points_count": int(edge_points_count),
             "nyquist_freq": float(nyquist_freq) if np.isfinite(nyquist_freq) else np.nan,
-            "plot_limit": float(plot_limit),
-            "freq_scale_factor": float(freq_scale_factor),
             "iec_corrections_applied": True,
+            "angle_detection_method": getattr(edge_mtf, 'angle_detection_method', 'Hough Transform'),
         }
 
     except Exception as e:
@@ -311,15 +304,31 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         fname = mtf_results['filename']
         edge_angle = mtf_results.get("edge_angle_deg", np.nan)
         is_vertical = mtf_results.get("is_vertical", False)
-        orientation = "vertical" if is_vertical else "horizontal"
+        hough_conf = mtf_results.get("hough_confidence", np.nan)
+        edge_strength = mtf_results.get("edge_strength", np.nan)
+        orientation = "Vertical" if is_vertical else "Horizontal"
         
-        with st.expander(f"📊 {fname} - Edge Info"):
-            st.info(f"**Edge:** {edge_angle:.2f}° | {'Vertical' if is_vertical else 'Horizontal'}")
+        with st.expander(f"📊 {fname} - Edge Detection Results (Hough Transform)"):
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Detected Angle", f"{edge_angle:.2f}°")
+            with col2:
+                st.metric("Confidence", f"{hough_conf:.1%}")
+            with col3:
+                st.metric("Edge Strength", f"{edge_strength:.3f}")
+            
+            st.info(f"**Edge Orientation:** {orientation}")
+            
+            # IEC optimal range validation
             optimal_range = (85, 87) if is_vertical else (3, 5)
-            if optimal_range[0] <= edge_angle <= optimal_range[1]:
-                st.success(f"✅ Optimal angle")
+            abs_angle = abs(edge_angle)
+            
+            if optimal_range[0] <= abs_angle <= optimal_range[1]:
+                st.success(f"✅ Angle within IEC optimal range: {optimal_range[0]}-{optimal_range[1]}° (for {orientation.lower()} edges)")
             else:
-                st.warning(f"⚠️ Outside optimal range ({optimal_range[0]}-{optimal_range[1]}°)")
+                st.warning(f"⚠️ Angle outside IEC optimal range: {optimal_range[0]}-{optimal_range[1]}° (for {orientation.lower()} edges)")
+                st.caption(f"Current: {abs_angle:.2f}° | Optimal: {optimal_range[0]}-{optimal_range[1]}°")
 
     # MTF Curve - Combine all results
     st.subheader("MTF Curve")

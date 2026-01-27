@@ -2,9 +2,8 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import altair as alt
-import matplotlib.pyplot as plt
-from typing import Optional
-from scipy.ndimage import sobel
+import pydicom
+import io
 
 try:
     from pylinac.core.mtf import EdgeMTF
@@ -17,41 +16,19 @@ def _bump_mtf_refresh():
     st.session_state['mtf_refresh'] = st.session_state.get('mtf_refresh', 0) + 1
 
 
-def calculate_mtf_metrics(
-    edge_roi: np.ndarray,
-    pixel_spacing: float,
-) -> dict:
-    """
-    Calculate MTF using the slanted edge method (IEC 62220-1-1:2015) with full compliance corrections.
-
-    Parameters
-    ----------
-    edge_roi : np.ndarray
-        2D array containing the edge region for MTF analysis.
-    pixel_spacing : float
-        Physical pixel size in mm (average of row/col spacing).
-
-    Returns
-    -------
-    dict
-        Dictionary containing MTF results including frequencies, values, ESF, LSF, and spatial resolution metrics.
-        
-    IEC Corrections Applied
-    -----------------------
-    1. Spectral smoothing correction for finite-element differentiation (Section 5.1.4)
-    2. Frequency axis scaling correction (1/cos α) for oblique projection
-    """
+def calculate_mtf_metrics(edge_roi: np.ndarray, pixel_spacing: float) -> dict:
+    """Calculate MTF using the slanted edge method (IEC 62220-1-1:2015)."""
     if edge_roi is None or not isinstance(edge_roi, np.ndarray) or edge_roi.ndim != 2:
         st.error("Valid 2D edge ROI is required for MTF calculation.")
         return {"MTF_Status": "Error: Invalid edge ROI"}
 
-    if edge_roi.size < 100:  # Need sufficient pixels for meaningful edge analysis
+    if edge_roi.size < 100:
         st.error("Edge ROI is too small. Select a larger region containing the edge.")
         return {"MTF_Status": "Error: ROI too small"}
 
     if pixel_spacing is None or pixel_spacing <= 0:
         st.warning("Pixel spacing is not valid. MTF will be calculated but spatial frequencies may be incorrect.")
-        pixel_spacing = 0.1  # Default fallback
+        pixel_spacing = 0.1
         x_axis_unit = "cycles/mm (approx)"
     else:
         x_axis_unit = "cycles/mm"
@@ -61,27 +38,21 @@ def calculate_mtf_metrics(
         return {"MTF_Status": "Error: EdgeMTF not available"}
 
     try:
-        # Initialize EdgeMTF without edge smoothing (not in IEC standard)
-        edge_mtf = EdgeMTF(
-            edge_data=edge_roi,
-            pixel_size=pixel_spacing,
-            edge_smoothing=0.0,  # No pre-smoothing per IEC
-        )
+        edge_mtf = EdgeMTF(edge_data=edge_roi, pixel_size=pixel_spacing, edge_smoothing=0.0)
 
-        # Extract base results from EdgeMTF (now with PCA-based edge detection)
+        # Extract base results
         frequencies_raw = edge_mtf.frequencies
         mtf_values_raw = edge_mtf.mtf_values
         esf_positions = edge_mtf.esf_positions
         esf = edge_mtf.esf
         lsf = edge_mtf.lsf
         edge_angle_rad = edge_mtf.edge_angle
-        edge_angle_deg = edge_mtf.edge_angle_deg  # Now absolute value from PCA
+        edge_angle_deg = edge_mtf.edge_angle_deg
         is_vertical = edge_mtf.is_vertical
-        pca_confidence = edge_mtf.pca_confidence  # New PCA metric
-        edge_points_count = edge_mtf.edge_points_count  # New diagnostic
+        pca_confidence = edge_mtf.pca_confidence
+        edge_points_count = edge_mtf.edge_points_count
 
-        # --- IEC Correction 1: Frequency axis scaling for oblique projection (1/cos α) ---
-        # The edge angle causes frequency axis compression; correct by dividing by cos(α)
+        # IEC Correction 1: Frequency axis scaling
         if is_vertical:
             freq_scale_factor = np.abs(1.0 / np.sin(edge_angle_rad))
         else:
@@ -89,71 +60,47 @@ def calculate_mtf_metrics(
         
         frequencies_corrected = frequencies_raw * freq_scale_factor
 
-        # --- IEC Correction 2: Spectral smoothing correction for finite-element differentiation ---
-        # Differentiation (np.gradient) acts as a low-pass filter on MTF.
-        # Correct by dividing MTF by the sinc function: sinc(π·f·Δx)
-        # Δx is the ESF sampling interval (mean spacing between ESF positions)
+        # IEC Correction 2: Spectral smoothing correction
         if len(esf_positions) > 1:
-            delta_x = np.mean(np.diff(esf_positions)) * pixel_spacing  # in mm
+            delta_x = np.mean(np.diff(esf_positions)) * pixel_spacing
         else:
             delta_x = pixel_spacing
         
-        # Build sinc correction: sinc(π·f·Δx)
-        # Avoid division by zero at f=0 and near-zero values
         with np.errstate(divide='ignore', invalid='ignore'):
             sinc_arg = np.pi * frequencies_corrected * delta_x
-            sinc_correction = np.sinc(sinc_arg / np.pi)  # np.sinc uses sinc(x) = sin(πx)/(πx)
-            # Avoid division by very small sinc values (near zeros)
+            sinc_correction = np.sinc(sinc_arg / np.pi)
             sinc_correction = np.where(np.abs(sinc_correction) < 1e-6, 1.0, sinc_correction)
             mtf_values_corrected = mtf_values_raw / sinc_correction
-        
-        # Clip MTF to valid range [0, 1] after correction
-        # mtf_values_corrected = np.clip(mtf_values_corrected, 0.0, 1.0)
 
-        # Calculate MTF50 and MTF10 from corrected MTF
+        # Calculate MTF50 and MTF10
         try:
-            # Find the first frequency where MTF drops to 0.5 or below
-            if np.any(mtf_values_corrected <= 0.5):
-                # Find the first index where MTF <= 0.5
-                first_index = np.where(mtf_values_corrected <= 0.5)[0][0]
-                mtf50 = frequencies_corrected[first_index]
-            else:
-                mtf50 = np.nan
+            mtf50 = frequencies_corrected[np.where(mtf_values_corrected <= 0.5)[0][0]] if np.any(mtf_values_corrected <= 0.5) else np.nan
         except Exception:
             mtf50 = np.nan
 
         try:
-            # Find the first frequency where MTF drops to 0.1 or below
-            if np.any(mtf_values_corrected <= 0.1):
-                # Find the first index where MTF <= 0.1
-                first_index = np.where(mtf_values_corrected <= 0.1)[0][0]
-                mtf10 = frequencies_corrected[first_index]
-            else:
-                mtf10 = np.nan
+            mtf10 = frequencies_corrected[np.where(mtf_values_corrected <= 0.1)[0][0]] if np.any(mtf_values_corrected <= 0.1) else np.nan
         except Exception:
             mtf10 = np.nan
 
-        # Calculate plot limits: 0.1 × Nyquist, minimum 5 lp/mm
+        # Plot limits
         nyquist_freq = frequencies_corrected[-1] if len(frequencies_corrected) > 0 else np.nan
-        plot_limit_nyquist = 0.1 * nyquist_freq if np.isfinite(nyquist_freq) else 2.5
-        plot_limit = max(plot_limit_nyquist, 5.0)  # Ensure minimum 5 lp/mm
+        plot_limit = max(0.1 * nyquist_freq if np.isfinite(nyquist_freq) else 2.5, 5.0)
         
-        # Prepare chart data with corrected values (full range)
+        # Prepare chart data
         mtf_chart_data = np.column_stack([frequencies_corrected, mtf_values_corrected])
         esf_chart_data = np.column_stack([esf_positions, esf])
         lsf_chart_data = np.column_stack([np.arange(len(lsf)), lsf])
         
-        # Filter data for plotting (limited range)
+        # Filter data for plotting
         plot_mask = frequencies_corrected <= plot_limit
-        frequencies_plot = frequencies_corrected[plot_mask]
-        mtf_values_plot = mtf_values_corrected[plot_mask]
-        mtf_chart_data_plot = np.column_stack([frequencies_plot, mtf_values_plot])
+        mtf_chart_data_plot = np.column_stack([frequencies_corrected[plot_mask], mtf_values_corrected[plot_mask]])
 
         return {
             "frequencies": frequencies_corrected.tolist(),
             "mtf_values": mtf_values_corrected.tolist(),
             "mtf_chart_data": mtf_chart_data,
-            "mtf_chart_data_plot": mtf_chart_data_plot,  # Limited range for plotting
+            "mtf_chart_data_plot": mtf_chart_data_plot,
             "esf_chart_data": esf_chart_data,
             "lsf_chart_data": lsf_chart_data,
             "x_axis_unit": x_axis_unit,
@@ -176,260 +123,272 @@ def calculate_mtf_metrics(
         return {"MTF_Status": f"Error: {e}"}
 
 
-def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col):
+def _load_image_from_file(uploaded_file):
+    """Helper function to load DICOM image from uploaded file."""
+    filename = uploaded_file.name
+    file_bytes = uploaded_file.getvalue()
+    
+    # Try DICOM parsing
+    try:
+        ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True)
+        if hasattr(ds, 'pixel_array'):
+            img = ds.pixel_array
+            if img.ndim == 2:
+                return img, filename
+    except Exception:
+        pass
+    
+    return None, filename
+
+
+def _load_raw_file(uploaded_file, dtype, height, width):
+    """Load RAW file with specified dtype and dimensions (like detector_conversion.py)."""
+    filename = uploaded_file.name
+    file_bytes = uploaded_file.getvalue()
+    
+    try:
+        arr = np.frombuffer(file_bytes, dtype=dtype)
+        expected_size = height * width
+        
+        if arr.size != expected_size:
+            st.warning(f"⚠️ {filename}: Size mismatch (expected {expected_size} pixels, got {arr.size})")
+            return None, filename
+        
+        img = arr.reshape((height, width))
+        return img, filename
+    except Exception as e:
+        st.error(f"❌ Failed to load {filename} as RAW: {e}")
+        return None, filename
+
+
+def _create_mtf_chart(df_mtf, mtf_results, has_comparison):
+    """Helper function to create MTF chart."""
+    max_freq_in_data = df_mtf['Frequency'].max() if len(df_mtf) > 0 else 5
+    
+    x_encoding = alt.X('Frequency:Q', title=f'Spatial Frequency ({mtf_results["x_axis_unit"]})',
+                       scale=alt.Scale(domain=[0, max_freq_in_data], nice=False, padding=0.2))
+    y_encoding = alt.Y('MTF:Q', title='MTF', scale=alt.Scale(domain=[0, 1.05]))
+    
+    if has_comparison:
+        color_encoding = alt.Color('Image:N', legend=alt.Legend(title="Image"), 
+                                   scale=alt.Scale(range=['steelblue', 'orange']))
+        title = 'MTF Comparison (IEC 62220-1-1:2015)'
+        chart = alt.Chart(df_mtf).mark_line(clip=True).encode(x=x_encoding, y=y_encoding, color=color_encoding)
+    else:
+        title = 'Modulation Transfer Function (IEC 62220-1-1:2015)'
+        chart = alt.Chart(df_mtf).mark_line(clip=True, color='steelblue').encode(x=x_encoding, y=y_encoding)
+    
+    return chart.properties(title=title, height=400).interactive()
+
+
+def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, uploaded_files=None, raw_params=None):
     """Display the MTF analysis UI with ROI selection and IEC-compliant edge method."""
     st.subheader("Modulation Transfer Function (MTF) Analysis")
     
     st.markdown("""
     **IEC 62220-1-1:2015 Slanted Edge Method**
-    
-    This analysis calculates MTF using the slanted edge technique:
-    1. Select a rectangular ROI containing a sharp edge (contrast phantom)
-    2. The edge should be slanted at optimal angles:
-       - **Vertical edges**: 85-87° (3-5° from vertical)
-       - **Horizontal edges**: 3-5° (from horizontal)
-    3. Edge Spread Function (ESF) is extracted perpendicular to the edge
-    4. Line Spread Function (LSF) is derived by differentiating the ESF
-    5. MTF is calculated via Fourier Transform of the LSF
-    
-    **PCA Edge Detection:**
-    - Uses Principal Component Analysis for robust, noise-resistant edge angle determination
-    - Provides confidence metric for edge quality assessment
-    - Works with absolute angle values (no sign confusion)
-
-    **Requirements:**
-    - Edge phantom with sharp transition (high contrast)
-    - Edge angle within optimal range for accurate results
-    - Sufficient ROI size (at least 100×100 pixels recommended)
     """)
 
-    # Initialize session state
-    if 'mtf_roi_center_x' not in st.session_state:
-        st.session_state['mtf_roi_center_x'] = 50
-    if 'mtf_roi_center_y' not in st.session_state:
-        st.session_state['mtf_roi_center_y'] = 50
-    if 'mtf_roi_width' not in st.session_state:
-        st.session_state['mtf_roi_width'] = 20
-    if 'mtf_roi_height' not in st.session_state:
-        st.session_state['mtf_roi_height'] = 20
-
-    if image_array is None or not isinstance(image_array, np.ndarray) or image_array.ndim != 2:
-        st.warning("Please upload a valid 2D image first.")
-        return
-
-    h, w = image_array.shape
-
-    # ROI Selection Controls
-    st.markdown("### Edge ROI Selection")
-    st.caption("Define the rectangular region containing the edge for MTF analysis.")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.slider(
-            "ROI Center X (%)",
-            min_value=0,
-            max_value=100,
-            key='mtf_roi_center_x',
-            on_change=_bump_mtf_refresh,
-        )
-        st.slider(
-            "ROI Width (%)",
-            min_value=5,
-            max_value=100,
-            key='mtf_roi_width',
-            on_change=_bump_mtf_refresh,
-        )
-
-    with col2:
-        st.slider(
-            "ROI Center Y (%)",
-            min_value=0,
-            max_value=100,
-            key='mtf_roi_center_y',
-            on_change=_bump_mtf_refresh,
-        )
-        st.slider(
-            "ROI Height (%)",
-            min_value=5,
-            max_value=100,
-            key='mtf_roi_height',
-            on_change=_bump_mtf_refresh,
-        )
-
-    # Extract ROI from image
-    center_x_pct = st.session_state['mtf_roi_center_x']
-    center_y_pct = st.session_state['mtf_roi_center_y']
-    width_pct = st.session_state['mtf_roi_width']
-    height_pct = st.session_state['mtf_roi_height']
-
-    center_x_px = int(w * center_x_pct / 100)
-    center_y_px = int(h * center_y_pct / 100)
-    width_px = max(10, int(w * width_pct / 100))
-    height_px = max(10, int(h * height_pct / 100))
-
-    x0 = max(0, center_x_px - width_px // 2)
-    x1 = min(w, center_x_px + width_px // 2)
-    y0 = max(0, center_y_px - height_px // 2)
-    y1 = min(h, center_y_px + height_px // 2)
-
-    edge_roi = image_array[y0:y1, x0:x1]
-
-    st.caption(f"ROI: [{y0}:{y1}, {x0}:{x1}] → {edge_roi.shape[0]}×{edge_roi.shape[1]} pixels")
-
-    # Calculate pixel spacing
-    if pixel_spacing_row is not None and pixel_spacing_col is not None and pixel_spacing_row > 0 and pixel_spacing_col > 0:
-        pixel_spacing_avg = (pixel_spacing_row + pixel_spacing_col) / 2.0
+    # Check if we're in comparison mode
+    comparison_mode = uploaded_files is not None and len(uploaded_files) == 2
+    
+    if comparison_mode:
+        
+        # For RAW files, all files use the same dtype/dimensions
+        if raw_params is not None:
+            images_data = []
+            for uf in uploaded_files:
+                img, fname = _load_raw_file(uf, raw_params['dtype'], raw_params['height'], raw_params['width'])
+                if img is not None:
+                    images_data.append((img, fname))
+                else:
+                    st.error(f"⚠️ Could not load {uf.name}")
+                    return
+            
+            if len(images_data) == 2:
+                st.success(f"✓ Loaded both RAW files successfully")
+        else:
+            # DICOM files or pre-loaded image_array
+            if image_array is None:
+                st.error("⚠️ First image not loaded.")
+                return
+            
+            images_data = [(image_array, uploaded_files[0].name)]
+            
+            # Try loading second as DICOM
+            img2, fname2 = _load_image_from_file(uploaded_files[1])
+            
+            if img2 is not None:
+                images_data.append((img2, fname2))
+                st.success(f"✓ Loaded both images successfully")
+            else:
+                st.error(f"⚠️ Could not load second image '{uploaded_files[1].name}'")
+                return
+        
+        if len(images_data) < 2:
+            st.error("Could not load both images for comparison.")
+            return
+            
+        image_arrays = [img for img, _ in images_data]
+        filenames = [name for _, name in images_data]
     else:
-        pixel_spacing_avg = 0.1
-        st.warning("Pixel spacing unavailable or invalid; using default 0.1 mm/pixel.")
+        if image_array is None or not isinstance(image_array, np.ndarray) or image_array.ndim != 2:
+            st.warning("Please upload a valid 2D image first.")
+            return
+        image_arrays = [image_array]
+        filenames = ["Current Image"]
 
-    # Show ROI preview
+    # Initialize session state
+    for key, default in [('mtf_roi_center_x', 50), ('mtf_roi_center_y', 50), 
+                         ('mtf_roi_width', 20), ('mtf_roi_height', 20)]:
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+    # Use first image dimensions for ROI selection
+    h, w = image_arrays[0].shape
+
+    # ROI Selection
+    st.markdown("### Edge ROI Selection")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.slider("ROI Center X (%)", 0, 100, key='mtf_roi_center_x', on_change=_bump_mtf_refresh)
+        st.slider("ROI Width (%)", 5, 100, key='mtf_roi_width', on_change=_bump_mtf_refresh)
+    with col2:
+        st.slider("ROI Center Y (%)", 0, 100, key='mtf_roi_center_y', on_change=_bump_mtf_refresh)
+        st.slider("ROI Height (%)", 5, 100, key='mtf_roi_height', on_change=_bump_mtf_refresh)
+
+    # Extract ROI coordinates (same for all images)
+    center_x_px = int(w * st.session_state['mtf_roi_center_x'] / 100)
+    center_y_px = int(h * st.session_state['mtf_roi_center_y'] / 100)
+    width_px = max(10, int(w * st.session_state['mtf_roi_width'] / 100))
+    height_px = max(10, int(h * st.session_state['mtf_roi_height'] / 100))
+
+    x0, x1 = max(0, center_x_px - width_px // 2), min(w, center_x_px + width_px // 2)
+    y0, y1 = max(0, center_y_px - height_px // 2), min(h, center_y_px + height_px // 2)
+
+    st.caption(f"ROI: [{y0}:{y1}, {x0}:{x1}]")
+
+    # Pixel spacing
+    pixel_spacing_avg = ((pixel_spacing_row + pixel_spacing_col) / 2.0 
+                        if pixel_spacing_row and pixel_spacing_col and pixel_spacing_row > 0 
+                        else 0.1)
+    
+    if not (pixel_spacing_row and pixel_spacing_col and pixel_spacing_row > 0):
+        st.warning("Pixel spacing unavailable; using default 0.1 mm/pixel.")
+
+    # ROI Preview (first image only)
     with st.expander("Preview Edge ROI"):
-        roi_norm = (edge_roi - edge_roi.min()) / (edge_roi.max() - edge_roi.min() + 1e-9)
-        st.image(roi_norm, caption="Selected Edge ROI (normalized)", use_container_width=True)
-
-    # Add button to trigger MTF calculation
-    st.markdown("---")
-    if not st.button("Calculate MTF", key="mtf_calculate_button"):
-        st.info("Click 'Calculate MTF' button to compute the Modulation Transfer Function.")
-        return
+        edge_roi_preview = image_arrays[0][y0:y1, x0:x1]
+        roi_norm = (edge_roi_preview - edge_roi_preview.min()) / (edge_roi_preview.max() - edge_roi_preview.min() + 1e-9)
+        st.image(roi_norm, caption=f"ROI from {filenames[0]}", use_container_width=True)
 
     # Calculate MTF
-    with st.spinner("Calculating IEC-compliant MTF with PCA edge detection and spectral corrections..."):
-        mtf_results = calculate_mtf_metrics(
-            edge_roi=edge_roi,
-            pixel_spacing=pixel_spacing_avg,
-        )
-
-    if "MTF_Status" in mtf_results and "Error" in mtf_results["MTF_Status"]:
-        st.error(f"MTF Calculation Failed: {mtf_results['MTF_Status']}")
+    st.markdown("---")
+    if not st.button("Calculate MTF", key="mtf_calculate_button"):
+        st.info("Click 'Calculate MTF' to compute.")
         return
 
-    if not mtf_results or "mtf_chart_data" not in mtf_results:
-        st.error("MTF calculation did not return expected results.")
+    # Calculate MTF for all images
+    all_mtf_results = []
+    with st.spinner(f"Calculating MTF for {len(image_arrays)} image(s)..."):
+        for img, fname in zip(image_arrays, filenames):
+            edge_roi = img[y0:y1, x0:x1]
+            mtf_result = calculate_mtf_metrics(edge_roi, pixel_spacing_avg)
+            
+            if "MTF_Status" not in mtf_result or "Error" not in mtf_result.get("MTF_Status", ""):
+                mtf_result['filename'] = fname
+                all_mtf_results.append(mtf_result)
+
+    if not all_mtf_results:
+        st.error("No MTF results were successfully calculated.")
         return
 
-    st.success("MTF Analysis Complete!")
+    st.success(f"✅ MTF Complete for {len(all_mtf_results)} image(s)!")
 
-    # Display edge detection info
-    edge_angle = mtf_results.get("edge_angle_deg", np.nan)
-    is_vertical = mtf_results.get("is_vertical", False)
-    orientation = "vertical" if is_vertical else "horizontal"
-    freq_scale = mtf_results.get("freq_scale_factor", 1.0)
-    
-    st.info(f"**Edge detected:** {edge_angle:.2f}° from {orientation} | Orientation: {'Vertical' if is_vertical else 'Horizontal'}")
-    
-    # Show IEC corrections applied
-    if mtf_results.get("iec_corrections_applied"):
-        pca_confidence = mtf_results.get("pca_confidence", np.nan)
-        st.caption(f"✓ IEC corrections applied: Frequency scaling (1/cos α = {freq_scale:.4f}) | Spectral smoothing correction")
-        if pca_confidence < 2.0:
-            st.warning(f"⚠️ Low PCA confidence ({pca_confidence:.2f}). Edge may be poorly defined or noisy.")
-    
-    # Angle validation with orientation-specific warnings
-    if is_vertical:
-        if edge_angle < 85 or edge_angle > 87:
-            st.warning(f"⚠️ Vertical edge angle ({edge_angle:.1f}°) outside optimal range (85-87°). Consider adjusting ROI or phantom alignment.")
-        else:
-            st.success(f"✅ Vertical edge angle ({edge_angle:.1f}°) is within optimal range.")
-    else:
-        if edge_angle < 3 or edge_angle > 5:
-            st.warning(f"⚠️ Horizontal edge angle ({edge_angle:.1f}°) outside optimal range (3-5°). Consider adjusting ROI or phantom alignment.")
-        else:
-            st.success(f"✅ Horizontal edge angle ({edge_angle:.1f}°) is within optimal range.")
+    # Display edge info for each image
+    for mtf_results in all_mtf_results:
+        fname = mtf_results['filename']
+        edge_angle = mtf_results.get("edge_angle_deg", np.nan)
+        is_vertical = mtf_results.get("is_vertical", False)
+        orientation = "vertical" if is_vertical else "horizontal"
+        
+        with st.expander(f"📊 {fname} - Edge Info"):
+            st.info(f"**Edge:** {edge_angle:.2f}° | {'Vertical' if is_vertical else 'Horizontal'}")
+            optimal_range = (85, 87) if is_vertical else (3, 5)
+            if optimal_range[0] <= edge_angle <= optimal_range[1]:
+                st.success(f"✅ Optimal angle")
+            else:
+                st.warning(f"⚠️ Outside optimal range ({optimal_range[0]}-{optimal_range[1]}°)")
 
-    # MTF Curve
-    st.subheader(f"MTF Curve")
+    # MTF Curve - Combine all results
+    st.subheader("MTF Curve")
     
-    # Use limited range data for plotting
-    mtf_chart_data_plot = mtf_results.get("mtf_chart_data_plot", mtf_results["mtf_chart_data"])
-    df_mtf = pd.DataFrame(mtf_chart_data_plot, columns=["Frequency", "MTF"])
+    # Build dataframe with all MTF curves
+    dfs_to_concat = []
+    for mtf_results in all_mtf_results:
+        mtf_chart_data_plot = mtf_results.get("mtf_chart_data_plot", mtf_results["mtf_chart_data"])
+        df = pd.DataFrame(mtf_chart_data_plot, columns=["Frequency", "MTF"])
+        df['Image'] = mtf_results['filename']
+        dfs_to_concat.append(df)
     
-    # Get the actual maximum frequency from the filtered data
-    max_freq_in_data = df_mtf['Frequency'].max() if len(df_mtf) > 0 else 5
+    df_mtf = pd.concat(dfs_to_concat, ignore_index=True)
     
-    # Get plot limit info
-    plot_limit = mtf_results.get("plot_limit", "N/A")
-    nyquist_freq = mtf_results.get("nyquist_freq", np.nan)
+    if len(all_mtf_results) > 1:
+        st.info(f"📊 Comparing {len(all_mtf_results)} MTF curves")
     
-    if np.isfinite(nyquist_freq) and isinstance(plot_limit, (int, float)):
-        nyquist_ratio = plot_limit / nyquist_freq
-        st.caption(f"📊 Plot range limited to {plot_limit:.1f} {mtf_results['x_axis_unit']} ")
+    # Create and display chart
+    mtf_results = all_mtf_results[0]
+    chart = _create_mtf_chart(df_mtf, mtf_results, len(all_mtf_results) > 1)
     
-    chart = alt.Chart(df_mtf).mark_line(clip=True, color='steelblue').encode(
-        x=alt.X('Frequency:Q', 
-                title=f'Spatial Frequency ({mtf_results["x_axis_unit"]})',
-                scale=alt.Scale(domain=[0, max_freq_in_data], nice=False, padding=0.2)),
-        y=alt.Y('MTF:Q', title='MTF', scale=alt.Scale(domain=[0, 1.05]))
-    ).properties(
-        title='Modulation Transfer Function (IEC 62220-1-1:2015 with PCA Edge Detection)',
-        height=400
-    ).interactive()
-
     # Add hover interaction
-    nearest = alt.selection_point(
-        fields=['Frequency'],
-        nearest=True,
-        on='mouseover',
-        empty=False,
-        clear='mouseout'
-    )
-
-    selectors = alt.Chart(df_mtf).mark_point().encode(
-        x='Frequency:Q',
-        opacity=alt.value(0),
-    ).add_params(nearest)
-
+    nearest = alt.selection_point(fields=['Frequency'], nearest=True, on='mouseover', 
+                                  empty=False, clear='mouseout')
+    selectors = alt.Chart(df_mtf).mark_point().encode(x='Frequency:Q', opacity=alt.value(0)).add_params(nearest)
     points = chart.mark_circle(size=80).encode(
-        opacity=alt.when(nearest).then(alt.value(1)).otherwise(alt.value(0)),
-    )
-
+        opacity=alt.when(nearest).then(alt.value(1)).otherwise(alt.value(0)))
     text = chart.mark_text(align='left', dx=7, dy=-7, fontSize=12, stroke='white', strokeWidth=1).encode(
-        text=alt.when(nearest).then(alt.Text('MTF:Q', format='.3f')).otherwise(alt.value('')),
-    )
-
+        text=alt.when(nearest).then(alt.Text('MTF:Q', format='.3f')).otherwise(alt.value('')))
+    
     final_chart = alt.layer(chart, selectors, points, text)
     st.altair_chart(final_chart, use_container_width=True)
 
-    # MTF Metrics
-    st.subheader("MTF Spatial Resolution")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        mtf50_val = mtf_results.get('MTF50', 'N/A')
-        mtf50_str = f"{mtf50_val:.3f}" if isinstance(mtf50_val, (int, float)) else mtf50_val
-        st.metric("MTF 50%", f"{mtf50_str} {mtf_results['x_axis_unit']}")
-    
-    with col2:
-        mtf10_val = mtf_results.get('MTF10', 'N/A')
-        mtf10_str = f"{mtf10_val:.3f}" if isinstance(mtf10_val, (int, float)) else mtf10_val
-        st.metric("MTF 10%", f"{mtf10_str} {mtf_results['x_axis_unit']}")
-    
-    with col3:
-        nyquist = mtf_results.get('nyquist_freq', np.nan)
-        nyq_str = f"{nyquist:.3f}" if np.isfinite(nyquist) else "N/A"
-        st.metric("Nyquist Frequency", f"{nyq_str} {mtf_results['x_axis_unit']}")
+    # MTF Metrics - Show for each image
+    for idx, mtf_results in enumerate(all_mtf_results):
+        fname = mtf_results['filename']
+        st.subheader(f"MTF Metrics - {fname}")
+        col1, col2, col3 = st.columns(3)
+        
+        for col, key, label in [(col1, 'MTF50', "MTF 50%"), (col2, 'MTF10', "MTF 10%"), 
+                                (col3, 'nyquist_freq', "Nyquist Freq")]:
+            with col:
+                val = mtf_results.get(key, 'N/A')
+                val_str = f"{val:.3f}" if isinstance(val, (int, float)) and np.isfinite(val) else "N/A"
+                st.metric(label, f"{val_str} {mtf_results['x_axis_unit']}")
 
     # ESF and LSF plots
-    with st.expander("View Edge Spread Function (ESF) & Line Spread Function (LSF)"):
-        col_esf, col_lsf = st.columns(2)
-        
-        with col_esf:
-            st.markdown("**Edge Spread Function**")
-            esf_data = mtf_results["esf_chart_data"]
-            df_esf = pd.DataFrame(esf_data, columns=["Position", "ESF"])
-            esf_chart = alt.Chart(df_esf).mark_line().encode(
-                x=alt.X('Position:Q', title='Position (pixels)'),
-                y=alt.Y('ESF:Q', title='Normalized Intensity')
-            ).properties(height=300)
-            st.altair_chart(esf_chart, use_container_width=True)
-        
-        with col_lsf:
-            st.markdown("**Line Spread Function**")
-            lsf_data = mtf_results["lsf_chart_data"]
-            df_lsf = pd.DataFrame(lsf_data, columns=["Position", "LSF"])
-            lsf_chart = alt.Chart(df_lsf).mark_line(color='orange').encode(
-                x=alt.X('Position:Q', title='Position (pixels)'),
-                y=alt.Y('LSF:Q', title='Amplitude')
-            ).properties(height=300)
-            st.altair_chart(lsf_chart, use_container_width=True)
+    with st.expander("View Edge & Line Spread Functions"):
+        for idx, mtf_results in enumerate(all_mtf_results):
+            st.markdown(f"### {mtf_results['filename']}")
+            col_esf, col_lsf = st.columns(2)
+            
+            with col_esf:
+                st.markdown("**Edge Spread Function**")
+                df_esf = pd.DataFrame(mtf_results["esf_chart_data"], columns=["Position", "ESF"])
+                esf_chart = alt.Chart(df_esf).mark_line().encode(
+                    x=alt.X('Position:Q', title='Position (pixels)'),
+                    y=alt.Y('ESF:Q', title='Intensity')
+                ).properties(height=250)
+                st.altair_chart(esf_chart, use_container_width=True)
+            
+            with col_lsf:
+                st.markdown("**Line Spread Function**")
+                df_lsf = pd.DataFrame(mtf_results["lsf_chart_data"], columns=["Position", "LSF"])
+                lsf_chart = alt.Chart(df_lsf).mark_line(color='orange').encode(
+                    x=alt.X('Position:Q', title='Position (pixels)'),
+                    y=alt.Y('LSF:Q', title='Amplitude')
+                ).properties(height=250)
+                st.altair_chart(lsf_chart, use_container_width=True)
+            
+            if idx < len(all_mtf_results) - 1:
+                st.markdown("---")

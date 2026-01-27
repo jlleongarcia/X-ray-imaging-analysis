@@ -411,7 +411,18 @@ def main_app_ui():
                 display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, uploaded_files=uploaded_files)
 
             with tab_mtf:
-                display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
+                # Pass uploaded files to enable MTF comparison mode when 2 images are uploaded
+                # For RAW files, pass parameters so both can be loaded with same dtype/dimensions
+                raw_params_for_mtf = None
+                if is_raw_upload and len(raw_files) >= 2:
+                    # Extract RAW params from the loaded first image
+                    raw_params_for_mtf = {
+                        'dtype': image_array.dtype,
+                        'height': image_array.shape[0],
+                        'width': image_array.shape[1]
+                    }
+                display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, 
+                                            uploaded_files=uploaded_files, raw_params=raw_params_for_mtf)
 
             with tab_contrast:
                 display_threshold_contrast_section(image_array, pixel_spacing_row, pixel_spacing_col)

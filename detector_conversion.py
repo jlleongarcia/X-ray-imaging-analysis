@@ -79,6 +79,40 @@ def _detrend_roi(roi):
     return detrended
 
 
+def _bootstrap_variance(detrended_roi, n_bootstrap=500):
+    """Estimate variance of detrended ROI using bootstrap resampling.
+    
+    Treats the pure noise ROI as a "bag of marbles" and repeatedly samples
+    with replacement to robustly estimate the variance.
+    
+    Args:
+        detrended_roi: 2D array of detrended (pure noise) pixel values
+        n_bootstrap: Number of bootstrap iterations (default 500)
+    
+    Returns:
+        Bootstrap variance estimate (median of bootstrap variances)
+    """
+    # Flatten and remove invalid values
+    pixels = detrended_roi.flatten()
+    valid_pixels = pixels[np.isfinite(pixels)]
+    
+    if len(valid_pixels) < 2:
+        return np.nan
+    
+    n = len(valid_pixels)
+    bootstrap_variances = []
+    
+    # Bootstrap resampling
+    for _ in range(n_bootstrap):
+        # Sample n pixels with replacement
+        sample = np.random.choice(valid_pixels, size=n, replace=True)
+        # Calculate variance of this sample
+        bootstrap_variances.append(np.var(sample, ddof=1))
+    
+    # Return variance of bootstrap variances (accurate measure of uncertainty)
+    return float(np.var(bootstrap_variances, ddof=1))
+
+
 def _fit_mpv_vs_kerma(kerma_vals, mpv_vals, method, poly_degree=2):
     """Fit MPV vs kerma using specified method. Returns fit values, formula, R², and coefficients."""
     k, m = np.array(kerma_vals, dtype=float), np.array(mpv_vals, dtype=float)
@@ -317,6 +351,8 @@ def display_detector_conversion_section(uploaded_files=None):
             try:
                 inv_fn = _build_inverse_fn(conv)
                 sd2_vals = []
+                bootstrap_vars = []  # Store bootstrap variance estimates for weights
+                
                 for rec in results["files"]:
                     if rec.get("roi") is None:
                         st.error(f"Missing ROI data for {rec['filename']}")
@@ -330,23 +366,32 @@ def display_detector_conversion_section(uploaded_files=None):
                     # Detrend to remove heel effect and geometric dome (keep only noise)
                     roi_detrended = _detrend_roi(roi_kerma)
                     
+                    # Bootstrap variance estimation for robust weight calculation
+                    boot_var = _bootstrap_variance(roi_detrended, n_bootstrap=500)
+                    bootstrap_vars.append(boot_var)
+                    
                     # Compute std of detrended (pure noise) ROI
                     std_kerma = float(np.nanstd(roi_detrended))
                     sd2_vals.append(std_kerma**2)
                 
                 k_arr, y_arr = np.array(kerma_vals, dtype=float), np.array(sd2_vals, dtype=float)
-                mask = np.isfinite(k_arr) & np.isfinite(y_arr) & (k_arr > 0)
+                boot_var_arr = np.array(bootstrap_vars, dtype=float)
+                
+                mask = np.isfinite(k_arr) & np.isfinite(y_arr) & np.isfinite(boot_var_arr) & (k_arr > 0) & (boot_var_arr > 0)
                 if mask.sum() < 3:
                     st.error("Need at least 3 valid points to fit a quadratic.")
                 else:
-                    # Weighted RLM fit: σ² = a·k² + b·k + c with weights = 1/k²
+                    # Weighted RLM fit: σ² = a·k² + b·k + c with weights = 1/bootstrap_variance
                     k_valid, y_valid = k_arr[mask], y_arr[mask]
+                    boot_var_valid = boot_var_arr[mask]
                     
                     # Design matrix: [k², k, 1]
                     X = np.column_stack([k_valid**2, k_valid, np.ones_like(k_valid)])
                     
-                    # Weights: 1/k²
-                    weights = 1.0 / (k_valid**2)
+                    # Weights: 1/bootstrap_variance (more robust than 1/k²)
+                    weights = 1.0 / boot_var_valid
+                    
+                    st.info(f"Using bootstrap variance estimates (n=500) for robust weighting.")
                     
                     # Fit Weighted RLM
                     rlm_model = sm.RLM(y_valid, X, M=sm.robust.norms.HuberT(), weights=weights)
@@ -448,62 +493,6 @@ def display_detector_conversion_section(uploaded_files=None):
             ax3.legend(loc='best', fontsize=9)
             ax3.grid(True, alpha=0.3)
             st.pyplot(fig3)
-            
-            # Normalized noise plot: σ²/k_real² vs Kerma
-            st.write("**Normalized noise: σ²/k_real² vs Kerma**")
-            st.caption("k_real: kerma from MPV using detector response curve.")
-            try:
-                cached = st.session_state.get("detector_conversion")
-                if not cached or not cached.get("predict_mpv"):
-                    st.warning("Detector response curve not available.")
-                else:
-                    kerma_real_arr = np.array([inv_fn(np.array([r["mpv"]]))[0] for r in results["files"]], dtype=float)
-                    with np.errstate(divide='ignore', invalid='ignore'):
-                        y_normalized = y_arr / (kerma_real_arr**2)
-                    
-                    valid_mask = np.isfinite(y_normalized) & (k_arr > 0) & (kerma_real_arr > 0)
-                    k_valid, y_norm_valid = k_arr[valid_mask], y_normalized[valid_mask]
-                    
-                    if len(k_valid) > 0:
-                        k_inv = 1.0 / k_valid
-                        p_norm = np.polyfit(k_inv, y_norm_valid, 2)
-                        c_coeff, b_coeff, a_coeff = p_norm  # c/k², b/k, a
-                        
-                        # Generate smooth curve for visualization
-                        k_plot_min, k_plot_max = k_valid.min(), k_valid.max()
-                        k_smooth_norm = np.linspace(k_plot_min, k_plot_max, 200)
-                        k_inv_smooth = 1.0 / k_smooth_norm
-                        y_norm_smooth = np.polyval(p_norm, k_inv_smooth)
-                        
-                        r2_norm = 1 - np.sum((y_norm_valid - np.polyval(p_norm, k_inv))**2) / np.sum((y_norm_valid - np.mean(y_norm_valid))**2)
-                        
-                        fig4, ax4 = plt.subplots(figsize=(10, 6))
-                        ax4.scatter(k_valid, y_norm_valid, label='σ²/k_real² data', color='black', s=50, zorder=5)
-                        ax4.plot(k_smooth_norm, y_norm_smooth, color='C3', linewidth=2, label='Fit: $a + b/k + c/k²$')
-                        ax4.set_xlabel(r"$k$ (μGy)", fontsize=12)
-                        ax4.set_ylabel(r"$\sigma²/k_{\mathrm{real}}²$", fontsize=12)
-                        ax4.legend(loc='best', fontsize=10)
-                        ax4.grid(True, alpha=0.3)
-                        
-                        st.latex(rf"\sigma²/k_{{\mathrm{{real}}}}² = {a_coeff:.4g} + {b_coeff:.4g}/k + {c_coeff:.4g}/k²")
-                        st.write(f"R² = {r2_norm:.4f}")
-                        
-                        # Dominance interval
-                        if (a_coeff > 0) and (b_coeff > 0) and (c_coeff > 0):
-                            k_min_norm = c_coeff / b_coeff if b_coeff != 0 else None
-                            k_max_norm = b_coeff / a_coeff if a_coeff != 0 else None
-                            if k_min_norm and k_max_norm:
-                                delta_norm = b_coeff**2 - a_coeff*c_coeff
-                                if np.isclose(delta_norm, 0.0, rtol=1e-10, atol=1e-12):
-                                    st.latex(rf"k_\mathrm{{min}} = k_\mathrm{{max}} = {k_min_norm:.4g}\;\mu\,Gy\quad (b^2 \approx a\cdot c)")
-                                elif delta_norm > 0:
-                                    st.write("Quantum noise dominance interval (normalized):")
-                                    st.latex(rf"({k_min_norm:.4g},\,{k_max_norm:.4g})\;\mu\,Gy")
-                                else:
-                                    st.latex(r"b^2 \le a\cdot c\quad\text{(no dominance)}")
-                        st.pyplot(fig4)
-            except Exception as e:
-                st.warning(f"Could not display normalized plot: {e}")
         except Exception as e:
             st.warning(f"Could not display cached SD fit: {e}")
     

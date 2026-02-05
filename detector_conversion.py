@@ -32,6 +32,53 @@ def _central_roi_stats(img_array, roi_h=100, roi_w=100):
     return float(np.mean(roi)), float(np.std(roi)), roi
 
 
+def _detrend_roi(roi):
+    """Remove planar trend from ROI using first-order surface fit.
+    
+    Fits a plane Z = ax + by + c to remove systematic effects (heel effect, geometric dome)
+    and leaves only random noise (quantum + electronic).
+    
+    Args:
+        roi: 2D array (e.g., 100x100 kerma values)
+    
+    Returns:
+        Detrended 2D array with plane removed
+    """
+    H, W = roi.shape
+    # Create coordinate grids
+    y_coords, x_coords = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+    
+    # Flatten arrays for fitting
+    x_flat = x_coords.flatten()
+    y_flat = y_coords.flatten()
+    z_flat = roi.flatten()
+    
+    # Remove NaN/inf values for fitting
+    valid_mask = np.isfinite(z_flat)
+    if valid_mask.sum() < 3:
+        # Not enough valid points, return original
+        return roi
+    
+    x_valid = x_flat[valid_mask]
+    y_valid = y_flat[valid_mask]
+    z_valid = z_flat[valid_mask]
+    
+    # Design matrix: [x, y, 1] for plane Z = ax + by + c
+    X = np.column_stack([x_valid, y_valid, np.ones_like(x_valid)])
+    
+    # Fit plane using least squares
+    coeffs, _, _, _ = np.linalg.lstsq(X, z_valid, rcond=None)
+    a, b, c = coeffs
+    
+    # Compute fitted plane for all pixels
+    plane = a * x_coords + b * y_coords + c
+    
+    # Subtract plane to get detrended data (pure noise)
+    detrended = roi - plane
+    
+    return detrended
+
+
 def _fit_mpv_vs_kerma(kerma_vals, mpv_vals, method, poly_degree=2):
     """Fit MPV vs kerma using specified method. Returns fit values, formula, R², and coefficients."""
     k, m = np.array(kerma_vals, dtype=float), np.array(mpv_vals, dtype=float)
@@ -129,11 +176,35 @@ def _render_cached_fit(cache_key, title, x_label, y_label):
     # Plot if data available
     if "x_data" in cached and "y_data" in cached and "y_fit" in cached:
         fig, ax = plt.subplots()
-        ax.scatter(cached["x_data"], cached["y_data"], label='data')
-        ax.plot(cached["x_data"], cached["y_fit"], color='C1', label='fit')
+        x_data = np.array(cached["x_data"])
+        y_data = np.array(cached["y_data"])
+        
+        # Generate dense x values for smooth curve plotting
+        x_min, x_max = x_data.min(), x_data.max()
+        x_smooth = np.linspace(x_min, x_max, 200)
+        
+        # Compute fitted curve at dense points for smooth visualization
+        method = cached.get("method")
+        coeffs = np.array(cached.get("coeffs"))
+        
+        if method == 'linear':
+            y_smooth = np.polyval(coeffs, x_smooth)
+        elif method == 'log':
+            with np.errstate(divide='ignore', invalid='ignore'):
+                y_smooth = coeffs[0] * np.log(x_smooth) + coeffs[1]
+        elif method == 'poly':
+            y_smooth = np.polyval(coeffs, x_smooth)
+        else:
+            # Fallback: just plot original points
+            y_smooth = np.array(cached["y_fit"])
+            x_smooth = x_data
+        
+        ax.scatter(x_data, y_data, label='data', s=50, zorder=5)
+        ax.plot(x_smooth, y_smooth, color='C1', label='fit', linewidth=2)
         ax.set_xlabel(x_label)
         ax.set_ylabel(y_label)
         ax.legend()
+        ax.grid(True, alpha=0.3)
         st.pyplot(fig)
 
 def display_detector_conversion_section(uploaded_files=None):
@@ -252,8 +323,16 @@ def display_detector_conversion_section(uploaded_files=None):
                         return None
                     kerma_img = np.asarray(inv_fn(rec["roi"]), dtype=float)
                     kerma_img[~np.isfinite(kerma_img)] = np.nan
-                    _, std_kerma, _ = _central_roi_stats(kerma_img)
-                    sd2_vals.append(float(std_kerma)**2)
+                    
+                    # Extract central 100x100 ROI from kerma image
+                    _, _, roi_kerma = _central_roi_stats(kerma_img)
+                    
+                    # Detrend to remove heel effect and geometric dome (keep only noise)
+                    roi_detrended = _detrend_roi(roi_kerma)
+                    
+                    # Compute std of detrended (pure noise) ROI
+                    std_kerma = float(np.nanstd(roi_detrended))
+                    sd2_vals.append(std_kerma**2)
                 
                 k_arr, y_arr = np.array(kerma_vals, dtype=float), np.array(sd2_vals, dtype=float)
                 mask = np.isfinite(k_arr) & np.isfinite(y_arr) & (k_arr > 0)
@@ -340,14 +419,6 @@ def display_detector_conversion_section(uploaded_files=None):
         else:
             st.info("Dominance interval bounds could not be determined.")
         
-        # Data table
-        st.write("**Data from uploaded images:**")
-        df_table = pd.DataFrame([{
-            "Kerma (μGy)": float(r.get("kerma", 0)),
-            "Mean Value": float(r.get("mpv", 0)),
-            "SD Value": float(r.get("sd", 0))
-        } for r in results["files"]])
-        st.dataframe(df_table, use_container_width=True, hide_index=True)
 
         # Plot SD² components
         try:
@@ -358,14 +429,19 @@ def display_detector_conversion_section(uploaded_files=None):
             
             k_arr, y_arr = np.array(kerma_vals, dtype=float), np.array(sd2_vals, dtype=float)
             a_, b_, c_ = np.array(cached_sd["coeffs"], dtype=float)
-            y_fit = np.polyval([a_, b_, c_], k_arr)
-            order = np.argsort(k_arr)
+            
+            # Generate smooth curve for better visualization
+            k_min, k_max = k_arr.min(), k_arr.max()
+            k_smooth = np.linspace(k_min, k_max, 200)
+            y_fit_smooth = a_ * k_smooth**2 + b_ * k_smooth + c_
+            structural_smooth = a_ * k_smooth**2
+            quantum_smooth = b_ * k_smooth
             
             fig3, ax3 = plt.subplots(figsize=(10, 6))
             ax3.scatter(k_arr, y_arr, label='SD² data', color='black', s=50, zorder=5)
-            ax3.plot(k_arr[order], y_fit[order], color='C3', linewidth=2, label='Total: $a·k² + b·k + c$')
-            ax3.plot(k_arr[order], (a_*k_arr**2)[order], '--', color='C0', linewidth=1.5, label=f'Structural: ${a_:.4g}·k²$')
-            ax3.plot(k_arr[order], (b_*k_arr)[order], '--', color='C2', linewidth=1.5, label=f'Quantum: ${b_:.4g}·k$')
+            ax3.plot(k_smooth, y_fit_smooth, color='C3', linewidth=2, label='Total: $a·k² + b·k + c$')
+            ax3.plot(k_smooth, structural_smooth, '--', color='C0', linewidth=1.5, label=f'Structural: ${a_:.4g}·k²$')
+            ax3.plot(k_smooth, quantum_smooth, '--', color='C2', linewidth=1.5, label=f'Quantum: ${b_:.4g}·k$')
             ax3.axhline(c_, linestyle='--', color='C1', linewidth=1.5, label=f'Electronic: ${c_:.4g}$')
             ax3.set_xlabel(r"$k$ (μGy)", fontsize=12)
             ax3.set_ylabel(r"$SD²$", fontsize=12)
@@ -391,15 +467,19 @@ def display_detector_conversion_section(uploaded_files=None):
                     if len(k_valid) > 0:
                         k_inv = 1.0 / k_valid
                         p_norm = np.polyfit(k_inv, y_norm_valid, 2)
-                        y_norm_fit = np.polyval(p_norm, k_inv)
                         c_coeff, b_coeff, a_coeff = p_norm  # c/k², b/k, a
                         
-                        r2_norm = 1 - np.sum((y_norm_valid - y_norm_fit)**2) / np.sum((y_norm_valid - np.mean(y_norm_valid))**2)
+                        # Generate smooth curve for visualization
+                        k_plot_min, k_plot_max = k_valid.min(), k_valid.max()
+                        k_smooth_norm = np.linspace(k_plot_min, k_plot_max, 200)
+                        k_inv_smooth = 1.0 / k_smooth_norm
+                        y_norm_smooth = np.polyval(p_norm, k_inv_smooth)
+                        
+                        r2_norm = 1 - np.sum((y_norm_valid - np.polyval(p_norm, k_inv))**2) / np.sum((y_norm_valid - np.mean(y_norm_valid))**2)
                         
                         fig4, ax4 = plt.subplots(figsize=(10, 6))
                         ax4.scatter(k_valid, y_norm_valid, label='SD²/k_real² data', color='black', s=50, zorder=5)
-                        order_norm = np.argsort(k_valid)
-                        ax4.plot(k_valid[order_norm], y_norm_fit[order_norm], color='C3', linewidth=2, label='Fit: $a + b/k + c/k²$')
+                        ax4.plot(k_smooth_norm, y_norm_smooth, color='C3', linewidth=2, label='Fit: $a + b/k + c/k²$')
                         ax4.set_xlabel(r"$k$ (μGy)", fontsize=12)
                         ax4.set_ylabel(r"$SD²/k_{\mathrm{real}}²$", fontsize=12)
                         ax4.legend(loc='best', fontsize=10)

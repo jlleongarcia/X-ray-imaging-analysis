@@ -4,6 +4,7 @@ import io
 import csv
 import pandas as pd
 import matplotlib.pyplot as plt
+import statsmodels.api as sm
 
 """
 Detector conversion feature: Upload RAW/STD files, assign kerma values, extract ROI stats,
@@ -251,17 +252,37 @@ def display_detector_conversion_section(uploaded_files=None):
                         return None
                     kerma_img = np.asarray(inv_fn(rec["roi"]), dtype=float)
                     kerma_img[~np.isfinite(kerma_img)] = np.nan
-                    sd2_vals.append(float(np.nanstd(kerma_img))**2)
+                    _, std_kerma, _ = _central_roi_stats(kerma_img)
+                    sd2_vals.append(float(std_kerma)**2)
                 
                 k_arr, y_arr = np.array(kerma_vals, dtype=float), np.array(sd2_vals, dtype=float)
-                mask = np.isfinite(k_arr) & np.isfinite(y_arr)
+                mask = np.isfinite(k_arr) & np.isfinite(y_arr) & (k_arr > 0)
                 if mask.sum() < 3:
                     st.error("Need at least 3 valid points to fit a quadratic.")
                 else:
-                    p_sd = np.polyfit(k_arr[mask], y_arr[mask], 2)
-                    y_fit = np.polyval(p_sd, k_arr)
-                    a_, b_, c_ = p_sd
-                    ss_res, ss_tot = np.nansum((y_arr - y_fit)**2), np.nansum((y_arr - np.nanmean(y_arr))**2)
+                    # Weighted RLM fit: SD² = a·k² + b·k + c with weights = 1/k²
+                    k_valid, y_valid = k_arr[mask], y_arr[mask]
+                    
+                    # Design matrix: [k², k, 1]
+                    X = np.column_stack([k_valid**2, k_valid, np.ones_like(k_valid)])
+                    
+                    # Weights: 1/k²
+                    weights = 1.0 / (k_valid**2)
+                    
+                    # Fit Weighted RLM
+                    rlm_model = sm.RLM(y_valid, X, M=sm.robust.norms.HuberT(), weights=weights)
+                    rlm_results = rlm_model.fit(scale_est=sm.robust.scale.HuberScale())
+                    
+                    # Extract coefficients: [a, b, c] for SD² = a·k² + b·k + c
+                    a_, b_, c_ = rlm_results.params
+                    
+                    # Compute fitted values for all points (including masked)
+                    X_all = np.column_stack([k_arr**2, k_arr, np.ones_like(k_arr)])
+                    y_fit = X_all @ rlm_results.params
+                    
+                    # R² calculation
+                    ss_res = np.nansum((y_arr - y_fit)**2)
+                    ss_tot = np.nansum((y_arr - np.nanmean(y_arr))**2)
                     r2_sd = 1.0 - ss_res / ss_tot if ss_tot != 0 else np.nan
                     
                     # Dominance interval computation
@@ -279,7 +300,7 @@ def display_detector_conversion_section(uploaded_files=None):
                             interval_exists, interval_degenerate = False, False
                     
                     st.session_state["detector_sd2_fit"] = {
-                        "coeffs": p_sd.tolist(), "formula": f"SD² = {a_:.4g}·k² + {b_:.4g}·k + {c_:.4g}",
+                        "coeffs": [float(a_), float(b_), float(c_)], "formula": f"SD² = {a_:.4g}·k² + {b_:.4g}·k + {c_:.4g}",
                         "latex_formula": rf"SD² = {a_:.4g}\,k² + {b_:.4g}\,k + {c_:.4g}",
                         "r2": float(r2_sd) if not np.isnan(r2_sd) else None,
                         "sd2": [None if not np.isfinite(v) else float(v) for v in y_arr],

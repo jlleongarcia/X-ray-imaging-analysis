@@ -12,6 +12,7 @@ dependencies = [
     "pydicom==3.0.1",
     "pylinac",
     "scikit-image==0.25.2",
+    "statsmodels>=0.14.0",
     "streamlit==1.45.1",
 ]
 

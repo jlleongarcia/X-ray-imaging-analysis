@@ -201,15 +201,15 @@ def _render_cached_fit(cache_key, title, x_label, y_label):
         
         ax.scatter(x_data, y_data, label='data', s=50, zorder=5)
         ax.plot(x_smooth, y_smooth, color='C1', label='fit', linewidth=2)
-        ax.set_xlabel(x_label)
-        ax.set_ylabel(y_label)
+        ax.set_xlabel(x_label, fontsize=12)
+        ax.set_ylabel(y_label, fontsize=12)
         ax.legend()
         ax.grid(True, alpha=0.3)
         st.pyplot(fig)
 
 def display_detector_conversion_section(uploaded_files=None):
     st.subheader("Detector conversion: MPV vs Kerma")
-    st.write("Assign kerma value to each uploaded RAW/STD file, compute central 100x100 MPV and SD. Use the buttons below to run fits when ready.")
+    st.write("Assign kerma value to each uploaded RAW/STD file, compute central 100x100 MPV and σ. Use the buttons below to run fits when ready.")
 
     uploaded = uploaded_files if uploaded_files else st.file_uploader(
         "Upload RAW or STD files", type=["raw", "RAW", "std", "STD"], accept_multiple_files=True
@@ -243,7 +243,7 @@ def display_detector_conversion_section(uploaded_files=None):
                 "filename": fname, "kerma": float(kerma_val), "ei": float(ei_val),
                 "mpv": float(mpv), "sd": float(sd), "roi": roi
             })
-            st.write(f"MPV: {mpv:.3f}, SD: {sd:.3f}")
+            st.write(f"MPV: {mpv:.3f}, σ: {sd:.3f}")
         except Exception as e:
             st.error(f"Failed to process {f.name}: {e}")
             return None
@@ -282,7 +282,7 @@ def display_detector_conversion_section(uploaded_files=None):
         except Exception as e:
             st.error(f"Fit failed: {e}")
 
-    _render_cached_fit("detector_conversion", "Detector Response", r"$k$", "MPV")
+    _render_cached_fit("detector_conversion", "Detector Response", r"$k$ (μGy)", "MPV")
 
     # --- Exposition Index (EI) vs Kerma ---
     st.write("### Exposition Index (EI) vs Kerma Fit")
@@ -303,13 +303,13 @@ def display_detector_conversion_section(uploaded_files=None):
             except Exception as e:
                 st.error(f"EI fit failed: {e}")
     
-    _render_cached_fit("detector_ei_fit", "EI vs Kerma", r"$k$", "Exposition Index (EI)")
+    _render_cached_fit("detector_ei_fit", "EI vs Kerma", r"$k$ (μGy)", "Exposition Index (EI)")
 
-    # --- Noise: SD² vs Kerma ---
-    st.write("### Noise: SD² vs Kerma")
-    st.caption("Compute SD on linearized (kerma-domain) ROI, square it (SD²), then fit SD² = a·k² + b·k + c.")
+    # --- Noise: σ² vs Kerma ---
+    st.write("### Noise: σ² vs Kerma")
+    st.caption("Compute σ on linearized (kerma-domain) ROI, square it (σ²), then fit σ² = a·k² + b·k + c.")
     
-    if st.button("Run fit: SD² vs Kerma", key="run_fit_sd2"):
+    if st.button("Run fit: σ² vs Kerma", key="run_fit_sd2"):
         conv = st.session_state.get("detector_conversion")
         if not (isinstance(conv, dict) and conv.get("coeffs")):
             st.error("Run the Detector Response Curve fit first.")
@@ -339,7 +339,7 @@ def display_detector_conversion_section(uploaded_files=None):
                 if mask.sum() < 3:
                     st.error("Need at least 3 valid points to fit a quadratic.")
                 else:
-                    # Weighted RLM fit: SD² = a·k² + b·k + c with weights = 1/k²
+                    # Weighted RLM fit: σ² = a·k² + b·k + c with weights = 1/k²
                     k_valid, y_valid = k_arr[mask], y_arr[mask]
                     
                     # Design matrix: [k², k, 1]
@@ -352,7 +352,7 @@ def display_detector_conversion_section(uploaded_files=None):
                     rlm_model = sm.RLM(y_valid, X, M=sm.robust.norms.HuberT(), weights=weights)
                     rlm_results = rlm_model.fit(scale_est=sm.robust.scale.HuberScale())
                     
-                    # Extract coefficients: [a, b, c] for SD² = a·k² + b·k + c
+                    # Extract coefficients: [a, b, c] for σ² = a·k² + b·k + c
                     a_, b_, c_ = rlm_results.params
                     
                     # Compute fitted values for all points (including masked)
@@ -379,8 +379,8 @@ def display_detector_conversion_section(uploaded_files=None):
                             interval_exists, interval_degenerate = False, False
                     
                     st.session_state["detector_sd2_fit"] = {
-                        "coeffs": [float(a_), float(b_), float(c_)], "formula": f"SD² = {a_:.4g}·k² + {b_:.4g}·k + {c_:.4g}",
-                        "latex_formula": rf"SD² = {a_:.4g}\,k² + {b_:.4g}\,k + {c_:.4g}",
+                        "coeffs": [float(a_), float(b_), float(c_)], "formula": f"σ² = {a_:.4g}·k² + {b_:.4g}·k + {c_:.4g}",
+                        "latex_formula": rf"\sigma² = {a_:.4g}\,k² + {b_:.4g}\,k + {c_:.4g}",
                         "r2": float(r2_sd) if not np.isnan(r2_sd) else None,
                         "sd2": [None if not np.isfinite(v) else float(v) for v in y_arr],
                         "abc_positive": bool(abc_positive), "upper_limit_k": (float(k_max) if k_max else None),
@@ -438,19 +438,19 @@ def display_detector_conversion_section(uploaded_files=None):
             quantum_smooth = b_ * k_smooth
             
             fig3, ax3 = plt.subplots(figsize=(10, 6))
-            ax3.scatter(k_arr, y_arr, label='SD² data', color='black', s=50, zorder=5)
+            ax3.scatter(k_arr, y_arr, label='σ² data', color='black', s=50, zorder=5)
             ax3.plot(k_smooth, y_fit_smooth, color='C3', linewidth=2, label='Total: $a·k² + b·k + c$')
             ax3.plot(k_smooth, structural_smooth, '--', color='C0', linewidth=1.5, label=f'Structural: ${a_:.4g}·k²$')
             ax3.plot(k_smooth, quantum_smooth, '--', color='C2', linewidth=1.5, label=f'Quantum: ${b_:.4g}·k$')
             ax3.axhline(c_, linestyle='--', color='C1', linewidth=1.5, label=f'Electronic: ${c_:.4g}$')
             ax3.set_xlabel(r"$k$ (μGy)", fontsize=12)
-            ax3.set_ylabel(r"$SD²$", fontsize=12)
+            ax3.set_ylabel(r"$\sigma²$", fontsize=12)
             ax3.legend(loc='best', fontsize=9)
             ax3.grid(True, alpha=0.3)
             st.pyplot(fig3)
             
-            # Normalized noise plot: SD²/k_real² vs Kerma
-            st.write("**Normalized noise: SD²/k_real² vs Kerma**")
+            # Normalized noise plot: σ²/k_real² vs Kerma
+            st.write("**Normalized noise: σ²/k_real² vs Kerma**")
             st.caption("k_real: kerma from MPV using detector response curve.")
             try:
                 cached = st.session_state.get("detector_conversion")
@@ -478,14 +478,14 @@ def display_detector_conversion_section(uploaded_files=None):
                         r2_norm = 1 - np.sum((y_norm_valid - np.polyval(p_norm, k_inv))**2) / np.sum((y_norm_valid - np.mean(y_norm_valid))**2)
                         
                         fig4, ax4 = plt.subplots(figsize=(10, 6))
-                        ax4.scatter(k_valid, y_norm_valid, label='SD²/k_real² data', color='black', s=50, zorder=5)
+                        ax4.scatter(k_valid, y_norm_valid, label='σ²/k_real² data', color='black', s=50, zorder=5)
                         ax4.plot(k_smooth_norm, y_norm_smooth, color='C3', linewidth=2, label='Fit: $a + b/k + c/k²$')
                         ax4.set_xlabel(r"$k$ (μGy)", fontsize=12)
-                        ax4.set_ylabel(r"$SD²/k_{\mathrm{real}}²$", fontsize=12)
+                        ax4.set_ylabel(r"$\sigma²/k_{\mathrm{real}}²$", fontsize=12)
                         ax4.legend(loc='best', fontsize=10)
                         ax4.grid(True, alpha=0.3)
                         
-                        st.latex(rf"SD²/k_{{\mathrm{{real}}}}² = {a_coeff:.4g} + {b_coeff:.4g}/k + {c_coeff:.4g}/k²")
+                        st.latex(rf"\sigma²/k_{{\mathrm{{real}}}}² = {a_coeff:.4g} + {b_coeff:.4g}/k + {c_coeff:.4g}/k²")
                         st.write(f"R² = {r2_norm:.4f}")
                         
                         # Dominance interval

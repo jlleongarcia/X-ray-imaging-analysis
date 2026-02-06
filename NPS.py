@@ -25,10 +25,180 @@ def _central_roi_mean(image: np.ndarray, roi_size: int) -> float:
     roi = image[y0:y0+roi_h, x0:x0+roi_w]
     return float(np.mean(roi)) if roi.size else np.nan
 
+def _try_load_dicom(data: bytes) -> Optional[np.ndarray]:
+    """Attempt to load image data as DICOM.
+    
+    Args:
+        data: Raw file bytes
+    
+    Returns:
+        2D float array if successful, None otherwise
+    """
+    if pydicom is None:
+        return None
+    
+    try:
+        # Check for DICM marker or valid DICOM header
+        is_dicom_like = False
+        if len(data) >= 132 and data[128:132] == b'DICM':
+            is_dicom_like = True
+        else:
+            try:
+                ds_hdr = pydicom.dcmread(io.BytesIO(data), force=True, stop_before_pixels=True)
+                if hasattr(ds_hdr, 'Rows') and hasattr(ds_hdr, 'Columns'):
+                    is_dicom_like = True
+            except Exception:
+                pass
+        
+        if is_dicom_like:
+            ds = pydicom.dcmread(io.BytesIO(data), force=True)
+            if hasattr(ds, 'pixel_array'):
+                arr = ds.pixel_array
+                if isinstance(arr, np.ndarray) and arr.ndim == 3:
+                    arr = np.mean(arr, axis=-1)
+                if isinstance(arr, np.ndarray):
+                    return arr.astype(float)
+    except Exception:
+        pass
+    return None
+
+def _try_load_pil_image(data: bytes) -> Optional[np.ndarray]:
+    """Attempt to load image data using PIL.
+    
+    Args:
+        data: Raw file bytes
+    
+    Returns:
+        2D float array if successful, None otherwise
+    """
+    if Image is None:
+        return None
+    
+    try:
+        img = Image.open(io.BytesIO(data))
+        if img.mode != 'L':
+            img = img.convert('L')
+        return np.array(img, dtype=float)
+    except Exception:
+        return None
+
+def _try_load_raw_std(data: bytes, ext: str, reference_shape: Optional[tuple], 
+                      reference_dtype: Optional[np.dtype], fname: str) -> Optional[np.ndarray]:
+    """Attempt to load RAW/STD file using reference shape and dtype.
+    
+    Args:
+        data: Raw file bytes
+        ext: File extension
+        reference_shape: Expected image shape (H, W)
+        reference_dtype: Expected data type
+        fname: Filename for warning messages
+    
+    Returns:
+        2D float array if successful, None otherwise
+    """
+    if ext not in ('raw', 'std'):
+        return None
+    
+    if not reference_shape or len(reference_shape) != 2 or not reference_dtype:
+        return None
+    
+    expected_pixels = reference_shape[0] * reference_shape[1]
+    itemsize = np.dtype(reference_dtype).itemsize
+    total_bytes = len(data)
+    expected_bytes = expected_pixels * itemsize
+    
+    if total_bytes != expected_bytes:
+        st.warning(f"RAW/STD '{fname}' size mismatch: bytes={total_bytes}, expected={expected_bytes}; skipped.")
+        return None
+    
+    try:
+        return np.frombuffer(data, dtype=reference_dtype).reshape(reference_shape).astype(float)
+    except Exception:
+        return None
+
 
 def _bump_nps_refresh():
     """Callback to force a Streamlit rerun marker when any NPS input changes."""
     st.session_state['nps_refresh'] = st.session_state.get('nps_refresh', 0) + 1
+
+def _apply_inverse_detector_conversion(img: np.ndarray, conv: dict) -> tuple[np.ndarray, str]:
+    """Apply inverse detector conversion (pixel -> kerma) to image.
+    
+    Args:
+        img: 2D image array in pixel domain
+        conv: Detector conversion dictionary from session state
+    
+    Returns:
+        Tuple of (converted_image, domain_used) where domain is 'kerma' or 'pixel'
+    """
+    if not (isinstance(conv, dict) and conv.get("coeffs") is not None):
+        return img, "pixel"
+    
+    method = conv.get("method")
+    coeffs = np.array(conv.get("coeffs"), dtype=float)
+    
+    try:
+        if method == 'linear':
+            a, b = coeffs
+            if a == 0:
+                raise ValueError("Inverse linear conversion undefined (a=0)")
+            return (img.astype(float) - b) / a, "kerma"
+        elif method == 'log':
+            a, b = coeffs
+            if a == 0:
+                raise ValueError("Inverse log conversion undefined (a=0)")
+            with np.errstate(over='ignore', invalid='ignore'):
+                result = np.exp((img.astype(float) - b) / a)
+            return result, "kerma"
+        else:
+            return img, "pixel"
+    except Exception as e:
+        st.warning(f"Inverse detector conversion failed ({e}); proceeding with pixel-domain NPS.")
+        return img, "pixel"
+
+def _compute_nnps_profiles(nnps_2d: np.ndarray, freqs: np.ndarray) -> tuple:
+    """Extract x and y component profiles from 2D NNPS.
+    
+    Args:
+        nnps_2d: 2D normalized NPS array
+        freqs: Frequency axis (1D, shifted)
+    
+    Returns:
+        Tuple of (freqs_positive, nnps_x_positive, nnps_y_positive)
+    """
+    center_idx = nnps_2d.shape[0] // 2
+    nnps_x_profile = nnps_2d[center_idx, :]  # horizontal profile
+    nnps_y_profile = nnps_2d[:, center_idx]  # vertical profile
+    
+    freqs_positive = freqs[center_idx:]
+    nnps_x_positive = nnps_x_profile[center_idx:]
+    nnps_y_positive = nnps_y_profile[center_idx:]
+    
+    return freqs_positive, nnps_x_positive, nnps_y_positive
+
+def _create_nnps_dataframe(nnps_1d_data: np.ndarray, nnps_x_data: np.ndarray, 
+                           nnps_y_data: np.ndarray, x_label: str) -> pd.DataFrame:
+    """Create combined dataframe for NNPS plotting.
+    
+    Args:
+        nnps_1d_data: 1D radial NNPS data [freq, value]
+        nnps_x_data: X-component NNPS data [freq, value]
+        nnps_y_data: Y-component NNPS data [freq, value]
+        x_label: Label for frequency axis
+    
+    Returns:
+        Combined DataFrame with Component column
+    """
+    df_1d = pd.DataFrame(nnps_1d_data, columns=[x_label, 'NNPS'])
+    df_1d['Component'] = '1D Radial'
+    
+    df_x = pd.DataFrame(nnps_x_data, columns=[x_label, 'NNPS'])
+    df_x['Component'] = 'X-component'
+    
+    df_y = pd.DataFrame(nnps_y_data, columns=[x_label, 'NNPS'])
+    df_y['Component'] = 'Y-component'
+    
+    return pd.concat([df_1d, df_x, df_y], ignore_index=True)
 
 
 def _load_uploaded_images(files, reference_shape: Optional[tuple]=None, reference_dtype: Optional[np.dtype]=None) -> List[np.ndarray]:
@@ -49,15 +219,8 @@ def _load_uploaded_images(files, reference_shape: Optional[tuple]=None, referenc
         Dtype to assume for additional raw/std files when reshaping.
     """
     arrays: List[np.ndarray] = []
-    expected_pixels = None
-    itemsize = None
-    if reference_shape and len(reference_shape) == 2:
-        expected_pixels = reference_shape[0] * reference_shape[1]
-    if reference_dtype is not None:
-        itemsize = np.dtype(reference_dtype).itemsize
 
     for f in files or []:
-        arr = None
         fname = getattr(f, 'name', 'unknown') or 'unknown'
         ext = fname.lower().rsplit('.', 1)[-1] if '.' in fname else ''
 
@@ -66,64 +229,23 @@ def _load_uploaded_images(files, reference_shape: Optional[tuple]=None, referenc
             data = f.getvalue() if hasattr(f, 'getvalue') else f.read()
         except Exception:
             data = None
+        
         if not data:
             st.warning(f"Empty or unreadable file: {fname}")
             continue
 
-        # Try DICOM (including pseudo-DICOM)
-        if pydicom is not None:
-            try:
-                is_dicom_like = False
-                if len(data) >= 132 and data[128:132] == b'DICM':
-                    is_dicom_like = True
-                else:
-                    try:
-                        ds_hdr = pydicom.dcmread(io.BytesIO(data), force=True, stop_before_pixels=True)
-                        if hasattr(ds_hdr, 'Rows') and hasattr(ds_hdr, 'Columns'):
-                            is_dicom_like = True
-                    except Exception:
-                        pass
-                if is_dicom_like:
-                    ds = pydicom.dcmread(io.BytesIO(data), force=True)
-                    if hasattr(ds, 'pixel_array'):
-                        arr = ds.pixel_array
-                        if isinstance(arr, np.ndarray) and arr.ndim == 3:
-                            # Collapse channels or frames by mean
-                            try:
-                                arr = np.mean(arr, axis=-1)
-                            except Exception:
-                                arr = None
-                        if isinstance(arr, np.ndarray):
-                            arr = arr.astype(float)
-            except Exception:
-                arr = None
-
-        # Fallback to PIL image
-        if arr is None and Image is not None:
-            try:
-                img = Image.open(io.BytesIO(data))
-                if img.mode != 'L':
-                    img = img.convert('L')
-                arr = np.array(img, dtype=float)
-            except Exception:
-                arr = None
-
-        # Raw/STD explicit reshape using reference info
-        if arr is None and ext in ('raw','std') and expected_pixels and itemsize:
-            total_bytes = len(data)
-            expected_bytes = expected_pixels * itemsize
-            if total_bytes == expected_bytes:
-                try:
-                    arr = np.frombuffer(data, dtype=reference_dtype).reshape(reference_shape).astype(float)
-                except Exception:
-                    arr = None
-            else:
-                st.warning(f"RAW/STD '{fname}' size mismatch: bytes={total_bytes}, expected={expected_bytes}; skipped.")
+        # Try loading in priority order
+        arr = _try_load_dicom(data)
+        if arr is None:
+            arr = _try_load_pil_image(data)
+        if arr is None:
+            arr = _try_load_raw_std(data, ext, reference_shape, reference_dtype, fname)
 
         if isinstance(arr, np.ndarray) and arr.ndim == 2 and arr.size > 0:
             arrays.append(arr)
         else:
             st.warning(f"Could not interpret '{fname}' as a 2D image; skipped.")
+    
     return arrays
 
 
@@ -176,38 +298,16 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, add
         st.error("All images must have identical dimensions for IEC NPS calculation. Please upload images with matching size.")
         return {"NPS_Status": "Error: Image sizes do not match"}
 
-    # Attempt inverse detector conversion to kerma domain if a linear or log fit is cached.
-    domain_used = "pixel"
+    # Apply inverse detector conversion to all images
     conv = st.session_state.get("detector_conversion")
-    def _apply_inverse(img: np.ndarray) -> np.ndarray:
-        nonlocal domain_used
-        if not (isinstance(conv, dict) and conv.get("coeffs") is not None):
-            return img
-        method = conv.get("method")
-        coeffs = np.array(conv.get("coeffs"), dtype=float)
-        try:
-            if method == 'linear':
-                a, b = coeffs
-                if a == 0:
-                    raise ValueError("Inverse linear conversion undefined (a=0)")
-                domain_used = "kerma"
-                return (img.astype(float) - b) / a
-            elif method == 'log':
-                a, b = coeffs
-                if a == 0:
-                    raise ValueError("Inverse log conversion undefined (a=0)")
-                with np.errstate(over='ignore', invalid='ignore'):
-                    out = np.exp((img.astype(float) - b) / a)
-                domain_used = "kerma"
-                return out
-            else:
-                return img
-        except Exception as inv_e:
-            st.warning(f"Inverse detector conversion failed ({inv_e}); proceeding with pixel-domain NPS.")
-            domain_used = "pixel"
-            return img
-
-    all_images = [_apply_inverse(img) for img in all_images]
+    domain_used = "pixel"
+    converted_images = []
+    for img in all_images:
+        converted_img, domain = _apply_inverse_detector_conversion(img, conv)
+        converted_images.append(converted_img)
+        if domain == "kerma":
+            domain_used = "kerma"
+    all_images = converted_images
 
     try:
         # Compute NPS for each uploaded image independently and average the resulting NNPS across images.
@@ -263,17 +363,10 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, add
         # 3. Apply the same radial average to get the 1D frequency axis
         freqs_nnps1d = radial_average(f_grid)
 
-        # 4. Extract x and y components from 2D NNPS (horizontal and vertical profiles through center)
-        center_idx = nnps_2d_avg_um2.shape[0] // 2
-        nnps_x_profile = nnps_2d_avg_um2[center_idx, :]  # horizontal profile (constant y, varying x)
-        nnps_y_profile = nnps_2d_avg_um2[:, center_idx]  # vertical profile (constant x, varying y)
-        
-        # Get positive frequencies only (right half for x, top half for y)
-        freqs_positive = freqs[center_idx:]
-        nnps_x_positive = nnps_x_profile[center_idx:]
-        nnps_y_positive = nnps_y_profile[center_idx:]
+        # 4. Extract x and y component profiles
+        freqs_positive, nnps_x_positive, nnps_y_positive = _compute_nnps_profiles(nnps_2d_avg_um2, freqs)
 
-        # 5. Combine into a single array for charting and interpolation.
+        # 5. Combine into arrays for charting and interpolation
         nnps_data_for_chart = np.array([freqs_nnps1d, nnps_1d_result]).T
         nnps_x_data_for_chart = np.array([freqs_positive, nnps_x_positive]).T
         nnps_y_data_for_chart = np.array([freqs_positive, nnps_y_positive]).T
@@ -315,33 +408,119 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, add
         st.error(f"Error during NPS calculation: {e}")
         return {"NPS_Status": f"Error: {e}"}
 
+def _create_nnps_chart(df_combined: pd.DataFrame, x_label: str, nyquist_freq: float, nnps_units: str) -> alt.LayerChart:
+    """Create interactive Altair chart for NNPS visualization.
+    
+    Args:
+        df_combined: DataFrame with frequency, NNPS, and Component columns
+        x_label: Label for x-axis (frequency)
+        nyquist_freq: Maximum frequency for x-axis
+        nnps_units: Units for NNPS (e.g., 'μm²')
+    
+    Returns:
+        Layered Altair chart with hover interactions
+    """
+    base_chart = alt.Chart(df_combined).mark_line(clip=True).encode(
+        x=alt.X(x_label, scale=alt.Scale(domainMax=nyquist_freq)),
+        y=alt.Y('NNPS', title=f'NNPS ({nnps_units})'),
+        color=alt.Color(
+            'Component:N',
+            scale=alt.Scale(
+                domain=['1D Radial', 'X-component', 'Y-component'],
+                range=['#1f77b4', '#ff7f0e', '#2ca02c']
+            ),
+            legend=alt.Legend(title="NNPS Component")
+        ),
+        strokeDash=alt.StrokeDash(
+            'Component:N',
+            scale=alt.Scale(
+                domain=['1D Radial', 'X-component', 'Y-component'],
+                range=[[], [5, 5], [2, 2]]
+            ),
+            legend=None
+        ),
+        strokeWidth=alt.StrokeWidth(
+            'Component:N',
+            scale=alt.Scale(
+                domain=['1D Radial', 'X-component', 'Y-component'],
+                range=[2, 1.5, 1.5]
+            ),
+            legend=None
+        )
+    ).properties(
+        title='Normalized Noise Power Spectrum (NNPS)'
+    ).interactive()
+
+    # Hover selection and interactive elements
+    nearest_selection = alt.selection_point(
+        fields=[x_label],
+        nearest=True,
+        on='mouseover',
+        empty='none',
+        clear='mouseout'
+    )
+
+    selectors = alt.Chart(df_combined).mark_point().encode(
+        x=x_label,
+        opacity=alt.value(0),
+    ).add_params(nearest_selection)
+
+    text = alt.Chart(df_combined).mark_text(
+        align='left', dx=7, dy=-7, fontSize=14, fontWeight="normal", 
+        stroke='white', strokeWidth=1
+    ).transform_calculate(
+        hover_text="datum.Component + ': ' + format(datum.NNPS, '.4f')"
+    ).encode(
+        x=x_label,
+        y='NNPS',
+        text=alt.when(nearest_selection).then('hover_text:N').otherwise(alt.value('')),
+        color=alt.Color(
+            'Component:N',
+            scale=alt.Scale(
+                domain=['1D Radial', 'X-component', 'Y-component'],
+                range=['#1f77b4', '#ff7f0e', '#2ca02c']
+            ),
+            legend=None
+        )
+    )
+
+    points = alt.Chart(df_combined).mark_circle(size=60).encode(
+        x=x_label,
+        y='NNPS',
+        color=alt.Color(
+            'Component:N',
+            scale=alt.Scale(
+                domain=['1D Radial', 'X-component', 'Y-component'],
+                range=['#1f77b4', '#ff7f0e', '#2ca02c']
+            ),
+            legend=None
+        ),
+        opacity=alt.when(nearest_selection).then(alt.value(1)).otherwise(alt.value(0)),
+    ).add_params(nearest_selection)
+
+    return alt.layer(base_chart, selectors, points, text)
+
 def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, uploaded_files=None):
     st.subheader("Noise Power Spectrum (NPS) Analysis")
 
     st.write("""
-    Computes NPS per image and averages NNPS across all images you've uploaded in the sidebar.
-    If your irradiated areas are too small, upload multiple flat-field images (same size & exposure) in the sidebar to improve statistics.
-    Images must have identical dimensions; aim for ~4 million total ROI pixels.
+    **IEC 62220-1-1:2015 Compliant NPS Analysis**
+    
+    Computes the normalized noise power spectrum (NNPS) according to IEC 62220-1-1:2015 standard.
+    The analysis averages NNPS across all uploaded images to improve statistical accuracy.
+    
+    **Requirements:**
+    - All images must have identical dimensions
+    - Images should be flat-field exposures at consistent exposure levels
+    - Aim for ~4 million total ROI pixels for adequate statistics
+    
+    Upload multiple images in the sidebar to meet the statistical requirements.
     """)
 
-    # Option to analyze only the current image (ignore other uploads)
-    st.checkbox(
-        "Analyze only the current image (ignore other uploads)",
-        value=False,
-        key='nps_use_only_current',
-        on_change=_bump_nps_refresh
-    )
-    use_only_current = st.session_state.get('nps_use_only_current', False)
-
-    # Use the images already uploaded in the sidebar unless the user chooses single-image analysis
-    if use_only_current:
-        additional_arrays = []
-        st.caption("Running NPS on the current image only.")
-    else:
-        # Try to infer reference dtype from the current image
-        ref_dtype = image_array.dtype if isinstance(image_array, np.ndarray) else None
-        ref_shape = image_array.shape if isinstance(image_array, np.ndarray) and image_array.ndim == 2 else None
-        additional_arrays = _load_uploaded_images(uploaded_files, reference_shape=ref_shape, reference_dtype=ref_dtype) if uploaded_files else []
+    # Load all uploaded images for NPS analysis
+    ref_dtype = image_array.dtype if isinstance(image_array, np.ndarray) else None
+    ref_shape = image_array.shape if isinstance(image_array, np.ndarray) and image_array.ndim == 2 else None
+    additional_arrays = _load_uploaded_images(uploaded_files, reference_shape=ref_shape, reference_dtype=ref_dtype) if uploaded_files else []
 
     # Fixed big ROI size: 125 mm square (IEC requirement)
     BIG_ROI_SIZE_MM = 125.0  # mm
@@ -350,21 +529,17 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     if pixel_spacing_row is not None and pixel_spacing_col is not None and pixel_spacing_row > 0 and pixel_spacing_col > 0:
         pixel_spacing_avg = (pixel_spacing_row + pixel_spacing_col) / 2.0
         big_roi_pixels = int(np.round(BIG_ROI_SIZE_MM / pixel_spacing_avg))
-        st.caption(f"Big ROI: {BIG_ROI_SIZE_MM} mm × {BIG_ROI_SIZE_MM} mm = {big_roi_pixels} × {big_roi_pixels} pixels (based on pixel spacing {pixel_spacing_avg:.4f} mm/pixel)")
     else:
         # Fallback if pixel spacing not available: assume 0.1 mm/pixel
         pixel_spacing_avg = 0.1
         big_roi_pixels = int(np.round(BIG_ROI_SIZE_MM / pixel_spacing_avg))
-        st.warning(f"Pixel spacing unavailable; assuming 0.1 mm/pixel. Big ROI: {big_roi_pixels} × {big_roi_pixels} pixels.")
+        st.warning("Pixel spacing unavailable; assuming 0.1 mm/pixel for ROI calculations.")
 
-    # Persistent ROI size selectors (use session_state so values survive reruns)
-    # Only small ROI is user-selectable now
+    # Small ROI size selector (persistent via session_state)
     allowed_small = [8, 16, 32, 64, 128, 256, 512]
     if 'nps_small_roi' not in st.session_state:
         st.session_state['nps_small_roi'] = 128
 
-    st.markdown("### ROI sizes")
-    st.caption(f"**Large central ROI**: Fixed at {BIG_ROI_SIZE_MM} mm × {BIG_ROI_SIZE_MM} mm ({big_roi_pixels} × {big_roi_pixels} pixels)")
     st.select_slider(
         "Small ROI size (pixels)",
         options=allowed_small,
@@ -422,124 +597,22 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
             st.caption(f"Total ROI pixels ~ {million_equiv:.2f} million (meets/exceeds 4 million guideline).")
 
     # ---- Create the Altair chart with x and y components ----
-    # Prepare combined dataframe for legend and unified plotting
     if "NNPS_X_chart_data" in nps_results_dict and "NNPS_Y_chart_data" in nps_results_dict:
-        nnps_x_data = nps_results_dict["NNPS_X_chart_data"]
-        nnps_y_data = nps_results_dict["NNPS_Y_chart_data"]
-        
-        # Create combined dataframe with component labels
-        df_1d = df_nnps.copy()
-        df_1d['Component'] = '1D Radial'
-        df_1d['NNPS'] = df_1d['NNPS_1D']
-        
-        df_x = pd.DataFrame(nnps_x_data, columns=[x_axis_unit_nps, 'NNPS'])
-        df_x['Component'] = 'X-component'
-        
-        df_y = pd.DataFrame(nnps_y_data, columns=[x_axis_unit_nps, 'NNPS'])
-        df_y['Component'] = 'Y-component'
-        
-        df_combined = pd.concat([
-            df_1d[[x_axis_unit_nps, 'NNPS', 'Component']],
-            df_x,
-            df_y
-        ], ignore_index=True)
+        df_combined = _create_nnps_dataframe(
+            nps_results_dict["NNPS_1D_chart_data"],
+            nps_results_dict["NNPS_X_chart_data"],
+            nps_results_dict["NNPS_Y_chart_data"],
+            x_axis_unit_nps
+        )
     else:
         # Fallback to 1D only
         df_combined = df_nnps.copy()
         df_combined['Component'] = '1D Radial'
         df_combined['NNPS'] = df_combined['NNPS_1D']
     
-    # Get NNPS units from results
+    # Get NNPS units and create chart
     nnps_units = nps_results_dict.get('nnps_units', 'μm²')
-    
-    # Create the chart with legend
-    base_chart = alt.Chart(df_combined).mark_line(clip=True).encode(
-        x=alt.X(x_axis_unit_nps, scale=alt.Scale(domainMax=nyquist_freq)),
-        y=alt.Y('NNPS', title=f'NNPS ({nnps_units})'),
-        color=alt.Color(
-            'Component:N',
-            scale=alt.Scale(
-                domain=['1D Radial', 'X-component', 'Y-component'],
-                range=['#1f77b4', '#ff7f0e', '#2ca02c']
-            ),
-            legend=alt.Legend(title="NNPS Component")
-        ),
-        strokeDash=alt.StrokeDash(
-            'Component:N',
-            scale=alt.Scale(
-                domain=['1D Radial', 'X-component', 'Y-component'],
-                range=[[], [5, 5], [2, 2]]
-            ),
-            legend=None  # Don't show stroke dash in legend, only color
-        ),
-        strokeWidth=alt.StrokeWidth(
-            'Component:N',
-            scale=alt.Scale(
-                domain=['1D Radial', 'X-component', 'Y-component'],
-                range=[2, 1.5, 1.5]
-            ),
-            legend=None
-        )
-    ).properties(
-        title='Normalized Noise Power Spectrum (NNPS)'
-    ).interactive()
-
-    # Create a selection that finds the nearest point based on X axis
-    nearest_selection = alt.selection_point(
-        fields=[x_axis_unit_nps],
-        nearest=True,
-        on='mouseover',
-        empty='none',
-        clear='mouseout'
-    )
-
-    # Transparent selectors to enable the nearest selection across the entire chart width
-    selectors = alt.Chart(df_combined).mark_point().encode(
-        x=x_axis_unit_nps,
-        opacity=alt.value(0),
-    ).add_params(nearest_selection)
-
-    # Text labels for hover showing all component values at the selected frequency
-    text = alt.Chart(df_combined).mark_text(
-        align='left', 
-        dx=7, 
-        dy=-7, 
-        fontSize=14, 
-        fontWeight="normal", 
-        stroke='white', 
-        strokeWidth=1
-    ).transform_calculate(
-        hover_text="datum.Component + ': ' + format(datum.NNPS, '.4f')"
-    ).encode(
-        x=x_axis_unit_nps,
-        y='NNPS',
-        text=alt.when(nearest_selection).then('hover_text:N').otherwise(alt.value('')),
-        color=alt.Color(
-            'Component:N',
-            scale=alt.Scale(
-                domain=['1D Radial', 'X-component', 'Y-component'],
-                range=['#1f77b4', '#ff7f0e', '#2ca02c']
-            ),
-            legend=None
-        )
-    )
-
-    # Points to highlight nearest
-    points = alt.Chart(df_combined).mark_circle(size=60).encode(
-        x=x_axis_unit_nps,
-        y='NNPS',
-        color=alt.Color(
-            'Component:N',
-            scale=alt.Scale(
-                domain=['1D Radial', 'X-component', 'Y-component'],
-                range=['#1f77b4', '#ff7f0e', '#2ca02c']
-            ),
-            legend=None
-        ),
-        opacity=alt.when(nearest_selection).then(alt.value(1)).otherwise(alt.value(0)),
-    ).add_params(nearest_selection)
-
-    final_chart = alt.layer(base_chart, selectors, points, text)
+    final_chart = _create_nnps_chart(df_combined, x_axis_unit_nps, nyquist_freq, nnps_units)
     st.altair_chart(final_chart, use_container_width=True)
 
     # Display the NNPS at target frequency if available

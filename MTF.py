@@ -38,9 +38,6 @@ def calculate_mtf_metrics(edge_roi: np.ndarray, pixel_spacing: float) -> dict:
         return {"MTF_Status": "Error: EdgeMTF not available"}
 
     try:
-        # EdgeMTF now uses Hough Transform internally for robust angle detection
-        st.caption("🔍 **Edge Detection: Hough Transform** (robust to ROI size/shape)")
-        
         # Run EdgeMTF with built-in Hough Transform angle detection
         edge_mtf = EdgeMTF(edge_data=edge_roi, pixel_size=pixel_spacing, edge_smoothing=0.0)
         
@@ -50,17 +47,6 @@ def calculate_mtf_metrics(edge_roi: np.ndarray, pixel_spacing: float) -> dict:
         hough_confidence = edge_mtf.hough_confidence
         edge_strength = edge_mtf.edge_strength
         edge_points_count = edge_mtf.edge_points_count
-        
-        # Display Hough detection results
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Detected Angle", f"{edge_angle_deg:.2f}°")
-        with col2:
-            st.metric("Edge Type", "Vertical" if is_vertical else "Horizontal")
-        with col3:
-            st.metric("Confidence", f"{hough_confidence:.1%}")
-        with col4:
-            st.metric("Edge Strength", f"{edge_strength:.3f}")
         
         # Extract MTF data (already IEC-compliant from EdgeMTF)
         frequencies = edge_mtf.frequencies
@@ -162,13 +148,13 @@ def _create_mtf_chart(df_mtf, mtf_results, has_comparison):
                        scale=alt.Scale(domain=[0, max_freq_in_data], nice=False, padding=0.2))
     y_encoding = alt.Y('MTF:Q', title='MTF', scale=alt.Scale(domain=[0, 1.05]))
     
+    title = 'Modulation Transfer Function (IEC 62220-1-1:2015)'
+    
     if has_comparison:
         color_encoding = alt.Color('Image:N', legend=alt.Legend(title="Image"), 
                                    scale=alt.Scale(range=['steelblue', 'orange']))
-        title = 'MTF Comparison (IEC 62220-1-1:2015)'
         chart = alt.Chart(df_mtf).mark_line(clip=True).encode(x=x_encoding, y=y_encoding, color=color_encoding)
     else:
-        title = 'Modulation Transfer Function (IEC 62220-1-1:2015)'
         chart = alt.Chart(df_mtf).mark_line(clip=True, color='steelblue').encode(x=x_encoding, y=y_encoding)
     
     return chart.properties(title=title, height=400).interactive()
@@ -219,7 +205,7 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                 return
         
         if len(images_data) < 2:
-            st.error("Could not load both images for comparison.")
+            st.error("Could not load both images.")
             return
             
         image_arrays = [img for img, _ in images_data]
@@ -260,8 +246,6 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     x0, x1 = max(0, center_x_px - width_px // 2), min(w, center_x_px + width_px // 2)
     y0, y1 = max(0, center_y_px - height_px // 2), min(h, center_y_px + height_px // 2)
 
-    st.caption(f"ROI: [{y0}:{y1}, {x0}:{x1}]")
-
     # Pixel spacing
     pixel_spacing_avg = ((pixel_spacing_row + pixel_spacing_col) / 2.0 
                         if pixel_spacing_row and pixel_spacing_col and pixel_spacing_row > 0 
@@ -269,12 +253,6 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     
     if not (pixel_spacing_row and pixel_spacing_col and pixel_spacing_row > 0):
         st.warning("Pixel spacing unavailable; using default 0.1 mm/pixel.")
-
-    # ROI Preview (first image only)
-    with st.expander("Preview Edge ROI"):
-        edge_roi_preview = image_arrays[0][y0:y1, x0:x1]
-        roi_norm = (edge_roi_preview - edge_roi_preview.min()) / (edge_roi_preview.max() - edge_roi_preview.min() + 1e-9)
-        st.image(roi_norm, caption=f"ROI from {filenames[0]}", use_container_width=True)
 
     # Calculate MTF
     st.markdown("---")
@@ -297,9 +275,9 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         st.error("No MTF results were successfully calculated.")
         return
 
-    st.success(f"✅ MTF Complete for {len(all_mtf_results)} image(s)!")
+    st.success("✅ MTF Analysis Complete!")
 
-    # Display edge info for each image
+    # Display edge detection information for each image
     for mtf_results in all_mtf_results:
         fname = mtf_results['filename']
         edge_angle = mtf_results.get("edge_angle_deg", np.nan)
@@ -308,27 +286,14 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         edge_strength = mtf_results.get("edge_strength", np.nan)
         orientation = "Vertical" if is_vertical else "Horizontal"
         
-        with st.expander(f"📊 {fname} - Edge Detection Results (Hough Transform)"):
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric("Detected Angle", f"{edge_angle:.2f}°")
-            with col2:
-                st.metric("Confidence", f"{hough_conf:.1%}")
-            with col3:
-                st.metric("Edge Strength", f"{edge_strength:.3f}")
-            
-            st.info(f"**Edge Orientation:** {orientation}")
-            
-            # IEC optimal range validation
-            optimal_range = (85, 87) if is_vertical else (3, 5)
-            abs_angle = abs(edge_angle)
-            
-            if optimal_range[0] <= abs_angle <= optimal_range[1]:
-                st.success(f"✅ Angle within IEC optimal range: {optimal_range[0]}-{optimal_range[1]}° (for {orientation.lower()} edges)")
-            else:
-                st.warning(f"⚠️ Angle outside IEC optimal range: {optimal_range[0]}-{optimal_range[1]}° (for {orientation.lower()} edges)")
-                st.caption(f"Current: {abs_angle:.2f}° | Optimal: {optimal_range[0]}-{optimal_range[1]}°")
+        # IEC optimal range validation
+        optimal_range = (85, 87) if is_vertical else (3, 5)
+        abs_angle = abs(edge_angle)
+        
+        if optimal_range[0] <= abs_angle <= optimal_range[1]:
+            st.info(f"**{fname}:** Edge angle {abs_angle:.2f}° ({orientation}) - ✅ Within IEC optimal range {optimal_range[0]}-{optimal_range[1]}° | Confidence: {hough_conf:.1%}")
+        else:
+            st.warning(f"**{fname}:** Edge angle {abs_angle:.2f}° ({orientation}) - ⚠️ Outside IEC optimal range {optimal_range[0]}-{optimal_range[1]}° | Confidence: {hough_conf:.1%}")
 
     # MTF Curve - Combine all results
     st.subheader("MTF Curve")
@@ -342,9 +307,6 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         dfs_to_concat.append(df)
     
     df_mtf = pd.concat(dfs_to_concat, ignore_index=True)
-    
-    if len(all_mtf_results) > 1:
-        st.info(f"📊 Comparing {len(all_mtf_results)} MTF curves")
     
     # Create and display chart
     mtf_results = all_mtf_results[0]

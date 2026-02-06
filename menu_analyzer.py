@@ -312,37 +312,6 @@ def main_app_ui():
 
         else:  # This is a RAW/STD file
             st.info("This is a RAW/STD image file. Analysis will be performed directly on the pixel data using the parameters you provided in the sidebar.")
-
-        # Display original image
-        display_array = image_array.copy()  # Work on a copy to avoid modifying the array passed to analysis
-
-        # To avoid overflow/underflow when normalizing integer dtypes, convert to float first
-        display_array = display_array.astype(np.float64)
-
-        # Handle potential NaN or inf values from previous calculations
-        display_array[np.isnan(display_array)] = 0
-        display_array[np.isinf(display_array)] = 0
-
-        # Recompute min/max after sanitization
-        min_val = np.min(display_array)
-        max_val = np.max(display_array)
-
-        if max_val > min_val:
-            # Normalize to 0-255 range using float arithmetic
-            display_array = 255.0 * (display_array - min_val) / (max_val - min_val)
-        else:
-            # Handle constant image
-            display_array = np.zeros_like(display_array, dtype=np.float64)
-
-        # Finally cast to uint8 for display
-        display_array = np.clip(display_array, 0, 255).astype(np.uint8)
-
-        if len(display_array.shape) == 2:
-            img_pil = Image.fromarray(display_array)
-            with st.expander("📷 Loaded Image", expanded=False):
-                st.image(img_pil, caption="Loaded Image (Normalized for Display)", use_container_width=True)
-        else:
-            st.warning(f"Image has unexpected shape {image_array.shape}. Cannot display directly.")
         
         # --- Analysis Type Selection ---
         st.markdown("---")

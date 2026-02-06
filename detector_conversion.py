@@ -5,6 +5,7 @@ import csv
 import pandas as pd
 import matplotlib.pyplot as plt
 import statsmodels.api as sm
+from scipy.optimize import least_squares
 
 """
 Detector conversion feature: Upload RAW/STD files, assign kerma values, extract ROI stats,
@@ -186,6 +187,91 @@ def _compute_deviations(actual, fitted):
     dev_list = [None if np.isnan(x) else float(x) for x in devs]
     abs_devs = [abs(d) for d in dev_list if d is not None]
     return dev_list, (max(abs_devs) if abs_devs else None)
+
+def _constrained_weighted_fit(k_valid, y_valid, weights, n_starts=4):
+    """Perform constrained weighted least squares fit with multi-start verification.
+    
+    Args:
+        k_valid: Valid kerma values
+        y_valid: Valid y values (σ²)
+        weights: Weights for each point
+        n_starts: Number of initial guesses (default 4)
+    
+    Returns:
+        Tuple of (a, b, c, success_msg, warning_msg)
+    """
+    def residuals(params):
+        a, b, c = params
+        y_pred = a * k_valid**2 + b * k_valid + c
+        return np.sqrt(weights) * (y_valid - y_pred)
+    
+    # Generate initial guesses
+    initial_guesses = [np.abs(np.polyfit(k_valid, y_valid, 2))]  # From polyfit
+    np.random.seed(42)
+    initial_guesses.extend([np.random.uniform(0, 1, size=3) for _ in range(n_starts - 1)])
+    
+    # Run optimization from each starting point
+    results_list = []
+    for x0 in initial_guesses:
+        result = least_squares(
+            residuals, x0=x0, bounds=(0, np.inf),
+            loss='soft_l1', f_scale=1.0
+        )
+        if result.success:
+            results_list.append(result)
+    
+    if not results_list:
+        return None, None, None, None, "All optimization attempts failed."
+    
+    # Select best solution and verify convergence
+    params_array = np.array([r.x for r in results_list])
+    best_idx = np.argmin([r.cost for r in results_list])
+    a, b, c = results_list[best_idx].x
+    
+    # Check convergence
+    param_stds = np.std(params_array, axis=0)
+    param_means = np.mean(params_array, axis=0)
+    relative_stds = param_stds / (param_means + 1e-10)
+    
+    warning_msg = None
+    success_msg = None
+    if np.any(relative_stds > 0.0001):
+        warning_msg = (f"Multi-start convergence check: Some variation detected. "
+                      f"Relative std: a={relative_stds[0]:.3f}, b={relative_stds[1]:.3f}, c={relative_stds[2]:.3f}")
+    else:
+        success_msg = (f"Multi-start convergence verified: All {len(results_list)} runs converged to same solution. "
+                      f"Relative std: a={relative_stds[0]:.4g}, b={relative_stds[1]:.4g}, c={relative_stds[2]:.4g}")
+    
+    return a, b, c, success_msg, warning_msg
+
+def _compute_dominance_interval(a, b, c):
+    """Compute quantum noise dominance interval from fit coefficients.
+    
+    Returns:
+        Dict with interval info: {abc_positive, k_min, k_max, exists, degenerate}
+    """
+    abc_positive = (a > 0) and (b > 0) and (c > 0)
+    k_min = c / b if (abc_positive and b != 0) else None
+    k_max = b / a if (abc_positive and a != 0) else None
+    interval_exists, interval_degenerate = None, None
+    
+    if abc_positive and k_min and k_max:
+        delta = b**2 - a*c
+        if np.isclose(delta, 0.0, rtol=1e-10, atol=1e-12):
+            interval_exists, interval_degenerate = False, True
+        elif delta > 0:
+            interval_exists, interval_degenerate = True, False
+        else:
+            interval_exists, interval_degenerate = False, False
+    
+    return {
+        "abc_positive": bool(abc_positive),
+        "k_min": (float(k_min) if k_min else None),
+        "k_max": (float(k_max) if k_max else None),
+        "upper_limit_k": (float(k_max) if k_max else None),
+        "dominance_interval_exists": (bool(interval_exists) if interval_exists is not None else None),
+        "dominance_interval_degenerate": (bool(interval_degenerate) if interval_degenerate is not None else None)
+    }
 
 def _render_cached_fit(cache_key, title, x_label, y_label):
     """Render a cached fit with formula, R², deviations, and plot."""
@@ -381,57 +467,42 @@ def display_detector_conversion_section(uploaded_files=None):
                 if mask.sum() < 3:
                     st.error("Need at least 3 valid points to fit a quadratic.")
                 else:
-                    # Weighted RLM fit: σ² = a·k² + b·k + c with weights = 1/bootstrap_variance
                     k_valid, y_valid = k_arr[mask], y_arr[mask]
                     boot_var_valid = boot_var_arr[mask]
-                    
-                    # Design matrix: [k², k, 1]
-                    X = np.column_stack([k_valid**2, k_valid, np.ones_like(k_valid)])
-                    
-                    # Weights: 1/bootstrap_variance (more robust than 1/k²)
                     weights = 1.0 / boot_var_valid
                     
-                    st.info(f"Using bootstrap variance estimates (n=500) for robust weighting.")
+                    st.info("Using bootstrap variance estimates (n=500) with non-negative constrained fitting.")
                     
-                    # Fit Weighted RLM
-                    rlm_model = sm.RLM(y_valid, X, M=sm.robust.norms.HuberT(), weights=weights)
-                    rlm_results = rlm_model.fit(scale_est=sm.robust.scale.HuberScale())
+                    # Perform constrained weighted fit with multi-start verification
+                    a_, b_, c_, success_msg, warning_msg = _constrained_weighted_fit(k_valid, y_valid, weights)
                     
-                    # Extract coefficients: [a, b, c] for σ² = a·k² + b·k + c
-                    a_, b_, c_ = rlm_results.params
+                    if a_ is None:
+                        st.error(warning_msg)
+                        return None
                     
-                    # Compute fitted values for all points (including masked)
-                    X_all = np.column_stack([k_arr**2, k_arr, np.ones_like(k_arr)])
-                    y_fit = X_all @ rlm_results.params
+                    # Display convergence messages
+                    if warning_msg:
+                        st.warning(warning_msg)
+                    if success_msg:
+                        st.success(success_msg)
                     
-                    # R² calculation
+                    # Compute fitted values and R²
+                    y_fit = a_ * k_arr**2 + b_ * k_arr + c_
                     ss_res = np.nansum((y_arr - y_fit)**2)
                     ss_tot = np.nansum((y_arr - np.nanmean(y_arr))**2)
                     r2_sd = 1.0 - ss_res / ss_tot if ss_tot != 0 else np.nan
                     
-                    # Dominance interval computation
-                    abc_positive = (a_ > 0) and (b_ > 0) and (c_ > 0)
-                    k_min = c_ / b_ if (abc_positive and b_ != 0) else None
-                    k_max = b_ / a_ if (abc_positive and a_ != 0) else None
-                    interval_exists, interval_degenerate = None, None
-                    if abc_positive and k_min and k_max:
-                        delta = b_**2 - a_*c_
-                        if np.isclose(delta, 0.0, rtol=1e-10, atol=1e-12):
-                            interval_exists, interval_degenerate = False, True
-                        elif delta > 0:
-                            interval_exists, interval_degenerate = True, False
-                        else:
-                            interval_exists, interval_degenerate = False, False
+                    # Compute dominance interval
+                    interval_info = _compute_dominance_interval(a_, b_, c_)
                     
+                    # Store results
                     st.session_state["detector_sd2_fit"] = {
-                        "coeffs": [float(a_), float(b_), float(c_)], "formula": f"σ² = {a_:.4g}·k² + {b_:.4g}·k + {c_:.4g}",
+                        "coeffs": [float(a_), float(b_), float(c_)],
+                        "formula": f"σ² = {a_:.4g}·k² + {b_:.4g}·k + {c_:.4g}",
                         "latex_formula": rf"\sigma² = {a_:.4g}\,k² + {b_:.4g}\,k + {c_:.4g}",
                         "r2": float(r2_sd) if not np.isnan(r2_sd) else None,
                         "sd2": [None if not np.isfinite(v) else float(v) for v in y_arr],
-                        "abc_positive": bool(abc_positive), "upper_limit_k": (float(k_max) if k_max else None),
-                        "k_min": (float(k_min) if k_min else None), "k_max": (float(k_max) if k_max else None),
-                        "dominance_interval_exists": (bool(interval_exists) if interval_exists is not None else None),
-                        "dominance_interval_degenerate": (bool(interval_degenerate) if interval_degenerate is not None else None),
+                        **interval_info
                     }
             except NotImplementedError as nie:
                 st.error(str(nie))
@@ -465,19 +536,13 @@ def display_detector_conversion_section(uploaded_files=None):
             st.info("Dominance interval bounds could not be determined.")
         
 
-        # Plot SD² components
+        # Plot σ² components
         try:
-            conv = st.session_state.get("detector_conversion")
-            inv_fn = _build_inverse_fn(conv)
-            sd2_vals = [float(np.nanstd(np.where(np.isfinite(x:=np.asarray(inv_fn(rec["roi"]), dtype=float)), x, np.nan)))**2 
-                       for rec in results["files"]]
-            
-            k_arr, y_arr = np.array(kerma_vals, dtype=float), np.array(sd2_vals, dtype=float)
+            k_arr, y_arr = np.array(kerma_vals, dtype=float), np.array(cached_sd.get("sd2", []), dtype=float)
             a_, b_, c_ = np.array(cached_sd["coeffs"], dtype=float)
             
             # Generate smooth curve for better visualization
-            k_min, k_max = k_arr.min(), k_arr.max()
-            k_smooth = np.linspace(k_min, k_max, 200)
+            k_smooth = np.linspace(k_arr.min(), k_arr.max(), 200)
             y_fit_smooth = a_ * k_smooth**2 + b_ * k_smooth + c_
             structural_smooth = a_ * k_smooth**2
             quantum_smooth = b_ * k_smooth

@@ -28,6 +28,118 @@ def _calculate_uniformity_term(val_i, val_mean):
 
     return abs_diff / denominator
 
+def _compute_central_roi(image_array):
+    """Extract central ROI (80% of total image area).
+    
+    Args:
+        image_array: 2D array of image pixels
+    
+    Returns:
+        Tuple of (central_roi_data, coords, percent) where:
+        - central_roi_data: The extracted central ROI
+        - coords: (y_start, x_start, y_end, x_end)
+        - percent: Percentage of total image area
+    """
+    H_orig, W_orig = image_array.shape
+    scale_factor = np.sqrt(0.8)
+    new_H, new_W = int(round(H_orig * scale_factor)), int(round(W_orig * scale_factor))
+    
+    if new_H < 1 or new_W < 1:
+        return None, None, 0.0
+    
+    start_row = (H_orig - new_H) // 2
+    end_row = start_row + new_H
+    start_col = (W_orig - new_W) // 2
+    end_col = start_col + new_W
+    
+    central_roi = image_array[start_row:end_row, start_col:end_col]
+    coords = (start_row, start_col, end_row, end_col)
+    percent = 100.0 * (new_H * new_W) / (H_orig * W_orig) if H_orig * W_orig > 0 else 0.0
+    
+    return central_roi, coords, percent
+
+def _compute_moving_roi_params(pixel_spacing_row, pixel_spacing_col, roi_size_mm=30.0, step_size_mm=15.0):
+    """Compute moving ROI dimensions and step sizes in pixels.
+    
+    Args:
+        pixel_spacing_row: Pixel spacing in mm/pixel for rows
+        pixel_spacing_col: Pixel spacing in mm/pixel for columns
+        roi_size_mm: ROI size in mm (default 30mm)
+        step_size_mm: Step size in mm (default 15mm)
+    
+    Returns:
+        Tuple of (roi_h_px, roi_w_px, step_h_px, step_w_px)
+    """
+    roi_h_px = int(round(roi_size_mm / pixel_spacing_row))
+    roi_w_px = int(round(roi_size_mm / pixel_spacing_col))
+    step_h_px = max(1, int(round(step_size_mm / pixel_spacing_row)))
+    step_w_px = max(1, int(round(step_size_mm / pixel_spacing_col)))
+    
+    return roi_h_px, roi_w_px, step_h_px, step_w_px
+
+def _get_valid_8neighbors(grid, r_idx, c_idx, num_rows, num_cols):
+    """Get values of 8 neighbors if all are valid (finite).
+    
+    Args:
+        grid: 2D array to extract neighbors from
+        r_idx: Row index of center cell
+        c_idx: Column index of center cell
+        num_rows: Total number of rows in grid
+        num_cols: Total number of columns in grid
+    
+    Returns:
+        List of 8 neighbor values, or None if any neighbor is invalid
+    """
+    if not (0 < r_idx < num_rows - 1 and 0 < c_idx < num_cols - 1):
+        return None
+    
+    neighbors = []
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            nr, nc = r_idx + dr, c_idx + dc
+            if not np.isfinite(grid[nr, nc]):
+                return None
+            neighbors.append(grid[nr, nc])
+    
+    return neighbors if len(neighbors) == 8 else None
+
+def _apply_inverse_conversion(image_array, conv):
+    """Apply inverse detector conversion (pixel -> kerma) if available.
+    
+    Args:
+        image_array: 2D array of pixel values
+        conv: Detector conversion dict from session state
+    
+    Returns:
+        Tuple of (converted_array, caption_message)
+    """
+    if not (isinstance(conv, dict) and conv.get("coeffs") is not None):
+        return image_array, "No detector conversion function cached; using pixel domain values."
+    
+    method = conv.get("method")
+    coeffs = np.array(conv.get("coeffs"), dtype=float)
+    
+    try:
+        if method == 'linear':
+            a, b = coeffs
+            if a == 0:
+                raise ValueError("Inverse conversion undefined (a=0) for linear fit")
+            result = (image_array.astype(float) - b) / a
+            return result, "Applied inverse linear conversion."
+        elif method == 'log':
+            a, b = coeffs
+            if a == 0:
+                raise ValueError("Inverse conversion undefined (a=0) for log fit")
+            with np.errstate(over='ignore', invalid='ignore'):
+                result = np.exp((image_array.astype(float) - b) / a)
+            return result, "Applied inverse logarithmic conversion."
+        else:
+            return image_array, "Detector conversion fit is polynomial; inverse not implemented. Using pixel domain for uniformity."
+    except Exception as e:
+        return image_array, f"Inverse conversion failed ({e}); proceeding with pixel domain."
+
 def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spacing_col):
     """
     Calculates uniformity metrics for an X-ray image.
@@ -64,68 +176,29 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
     if pixel_spacing_row <= 0 or pixel_spacing_col <= 0:
         raise ValueError("Pixel spacing values must be positive.")
 
-    # --- 1. Define central ROI (80% of total area) ---
-    H_orig, W_orig = image_array.shape
-
-    scale_factor = np.sqrt(0.8) # To get 80% area, scale dimensions by sqrt(0.8)
-    new_H = int(round(H_orig * scale_factor))
-    new_W = int(round(W_orig * scale_factor))
-
     # Default results for cases where processing isn't feasible
     nan_results = {
         "GU_PV": np.nan, "LU_PV": np.nan, "GU_SNR": np.nan, "LU_SNR": np.nan,
         "MeanPV_central": np.nan, "MeanSD_central": np.nan, "MeanSNR_central": np.nan,
         "central_roi_coords": None, "num_moving_rois": 0, "moving_roi_grid_shape": (0,0),
-        "central_roi_percent": 0.0,
-        "num_invalid_rois": 0,
-        "num_valid_rois": 0,
+        "central_roi_percent": 0.0, "num_invalid_rois": 0, "num_valid_rois": 0,
         "moving_roi_pvs": np.array([]).reshape(0,0), 
         "moving_roi_sds": np.array([]).reshape(0,0)
     }
 
-    if new_H < 1 or new_W < 1:
-        # Central ROI is too small (effectively zero area)
+    # --- 1. Extract central ROI (80% of total area) ---
+    central_roi_data, central_roi_coords, central_roi_percent = _compute_central_roi(image_array)
+    
+    if central_roi_data is None or central_roi_data.size == 0:
+        if central_roi_coords:
+            nan_results["central_roi_coords"] = central_roi_coords
         return nan_results
 
-    start_row_central = (H_orig - new_H) // 2
-    end_row_central = start_row_central + new_H
-    start_col_central = (W_orig - new_W) // 2
-    end_col_central = start_col_central + new_W
-
-    central_roi_data = image_array[start_row_central:end_row_central, start_col_central:end_col_central]
-    central_roi_coords = (start_row_central, start_col_central, end_row_central, end_col_central)
-
-    # Percentage of the image area taken by the central ROI
-    central_roi_area = new_H * new_W
-    total_image_area = H_orig * W_orig
-    central_roi_percent = 100.0 * (central_roi_area / total_image_area) if total_image_area > 0 else 0.0
-
-    if central_roi_data.size == 0:
-        nan_results["central_roi_coords"] = central_roi_coords
-        return nan_results
-
-    # --- 2. Placeholder central means ---
-    # These will be calculated from the grid of moving-ROI averages below
-    MeanPV_central = np.nan
-    MeanSD_central = np.nan
-    MeanSNR_central = np.nan
-
-    # --- 3. Define moving ROI parameters (30mm x 30mm, step 15mm) ---
-    roi_size_mm = 30.0
-    step_size_mm = 15.0
-
-    roi_h_px = int(round(roi_size_mm / pixel_spacing_row))
-    roi_w_px = int(round(roi_size_mm / pixel_spacing_col))
-    step_h_px = int(round(step_size_mm / pixel_spacing_row))
-    step_w_px = int(round(step_size_mm / pixel_spacing_col))
-
-    # Ensure step sizes are at least 1 pixel
-    step_h_px = max(1, step_h_px)
-    step_w_px = max(1, step_w_px)
-
+    # --- 2. Define moving ROI parameters (30mm x 30mm, step 15mm) ---
+    roi_h_px, roi_w_px, step_h_px, step_w_px = _compute_moving_roi_params(pixel_spacing_row, pixel_spacing_col)
+    
     base_results = {
-        "MeanPV_central": MeanPV_central, "MeanSD_central": MeanSD_central,
-        "MeanSNR_central": MeanSNR_central,
+        "MeanPV_central": np.nan, "MeanSD_central": np.nan, "MeanSNR_central": np.nan,
         "central_roi_coords": central_roi_coords, "num_moving_rois": 0,
         "moving_roi_grid_shape": (0,0),
         "moving_roi_pvs": np.array([]).reshape(0,0), "moving_roi_sds": np.array([]).reshape(0,0),
@@ -160,6 +233,7 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
         used_h_px = (y_coords[-1] + roi_h_px) - y_coords[0]
         used_w_px = (x_coords[-1] + roi_w_px) - x_coords[0]
         used_area = max(0, used_h_px) * max(0, used_w_px)
+        total_image_area = image_array.shape[0] * image_array.shape[1]
         central_roi_percent = 100.0 * (used_area / total_image_area) if total_image_area > 0 else 0.0
     except Exception:
         # Fallback to previously computed central_roi_percent (from central ROI geometry)
@@ -234,35 +308,19 @@ def calculate_xray_uniformity_metrics(image_array, pixel_spacing_row, pixel_spac
                 gu_snr_terms.append(gu_snr_term)
 
             # Local Uniformity terms (only for ROIs with 8 valid neighbors)
-            if 0 < r_idx < num_rois_y - 1 and 0 < c_idx < num_rois_x - 1:
-                neighbor_pvs = []
-                neighbor_snrs = []
-                valid_neighbors = True
-                for dr_neighbor in [-1, 0, 1]:
-                    for dc_neighbor in [-1, 0, 1]:
-                        if dr_neighbor == 0 and dc_neighbor == 0:
-                            continue  # Skip the central ROI itself
+            neighbor_pvs = _get_valid_8neighbors(pv_grid, r_idx, c_idx, num_rois_y, num_rois_x)
+            neighbor_snrs = _get_valid_8neighbors(snr_grid, r_idx, c_idx, num_rois_y, num_rois_x)
+            
+            if neighbor_pvs is not None and neighbor_snrs is not None:
+                pv_8n = np.mean(neighbor_pvs)
+                lu_pv_term = _calculate_uniformity_term(pv_i, pv_8n)
+                if np.isfinite(lu_pv_term):
+                    lu_pv_terms.append(lu_pv_term)
 
-                        nr, nc = r_idx + dr_neighbor, c_idx + dc_neighbor
-
-                        if not np.isfinite(pv_grid[nr, nc]) or not np.isfinite(snr_grid[nr, nc]):
-                            valid_neighbors = False  # A neighbor has invalid data
-                            break
-                        neighbor_pvs.append(pv_grid[nr, nc])
-                        neighbor_snrs.append(snr_grid[nr, nc])
-                    if not valid_neighbors:
-                        break
-
-                if valid_neighbors and len(neighbor_pvs) == 8:  # Ensure all 8 neighbors were valid and collected
-                    pv_8n = np.mean(neighbor_pvs)
-                    lu_pv_term = _calculate_uniformity_term(pv_i, pv_8n)
-                    if np.isfinite(lu_pv_term):
-                        lu_pv_terms.append(lu_pv_term)
-
-                    snr_8n = np.mean(neighbor_snrs)  # Mean of neighbor SNRs
-                    lu_snr_term = _calculate_uniformity_term(snr_i, snr_8n)
-                    if np.isfinite(lu_snr_term):
-                        lu_snr_terms.append(lu_snr_term)
+                snr_8n = np.mean(neighbor_snrs)
+                lu_snr_term = _calculate_uniformity_term(snr_i, snr_8n)
+                if np.isfinite(lu_snr_term):
+                    lu_snr_terms.append(lu_snr_term)
     
     # Final metrics: Max of the calculated terms.
     # Using np.nanmax to ignore NaNs if any slip through, though robust _calculate_uniformity_term aims to prevent them.
@@ -304,35 +362,15 @@ def display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_sp
     if pixel_spacing_row is not None and pixel_spacing_col is not None:
         if st.button("Run Uniformity Analysis"):
             with st.spinner("Calculating uniformity metrics (kerma-domain)..."):
-                # Attempt to apply inverse detector conversion (pixel -> kerma) if available
-                kerma_image = image_array
+                # Apply inverse detector conversion (pixel -> kerma) if available
                 conv = st.session_state.get("detector_conversion")
-                if isinstance(conv, dict) and conv.get("coeffs") is not None:
-                    method = conv.get("method")
-                    coeffs = np.array(conv.get("coeffs"), dtype=float)
-                    try:
-                        if method == 'linear':
-                            # m = a*k + b  -> k = (m - b)/a
-                            a, b = coeffs
-                            if a == 0:
-                                raise ValueError("Inverse conversion undefined (a=0) for linear fit")
-                            kerma_image = (image_array.astype(float) - b) / a
-                            st.caption("Applied inverse linear conversion: k = (m - b)/a")
-                        elif method == 'log':
-                            # m = a*ln(k) + b -> k = exp((m - b)/a)
-                            a, b = coeffs
-                            if a == 0:
-                                raise ValueError("Inverse conversion undefined (a=0) for log fit")
-                            with np.errstate(over='ignore', invalid='ignore'):
-                                kerma_image = np.exp((image_array.astype(float) - b) / a)
-                            st.caption("Applied inverse logarithmic conversion: k = exp((m - b)/a)")
-                        else:
-                            # Polynomial inverse not implemented
-                            st.warning("Detector conversion fit is polynomial; inverse not implemented. Using pixel domain for uniformity.")
-                    except Exception as inv_e:
-                        st.warning(f"Inverse conversion failed ({inv_e}); proceeding with pixel domain.")
+                kerma_image, caption_msg = _apply_inverse_conversion(image_array, conv)
+                
+                if "warning" in caption_msg.lower() or "failed" in caption_msg.lower():
+                    st.warning(caption_msg)
                 else:
-                    st.caption("No detector conversion function cached; using pixel domain values.")
+                    st.caption(caption_msg)
+                
                 try:
                     results = calculate_xray_uniformity_metrics(kerma_image, pixel_spacing_row, pixel_spacing_col)
                     st.success("Uniformity Analysis Complete!")

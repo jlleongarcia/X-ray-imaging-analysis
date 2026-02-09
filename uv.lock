@@ -771,7 +771,7 @@ wheels = [
 [[package]]
 name = "pylinac"
 version = "3.31.0"
-source = { git = "https://github.com/jlleongarcia/pylinac.git?rev=8bc796b3524e948c738e73ca8c54554cac293482#8bc796b3524e948c738e73ca8c54554cac293482" }
+source = { git = "https://github.com/jlleongarcia/pylinac.git?rev=6a353fbb131624c055477a137290afd52c8543dd#6a353fbb131624c055477a137290afd52c8543dd" }
 dependencies = [
     { name = "argue" },
     { name = "matplotlib" },
@@ -1253,7 +1253,7 @@ requires-dist = [
     { name = "opencv-python", specifier = "==4.11.0.86" },
     { name = "pyarrow", specifier = "==21.0.0" },
     { name = "pydicom", specifier = "==3.0.1" },
-    { name = "pylinac", git = "https://github.com/jlleongarcia/pylinac.git?rev=8bc796b3524e948c738e73ca8c54554cac293482" },
+    { name = "pylinac", git = "https://github.com/jlleongarcia/pylinac.git?rev=6a353fbb131624c055477a137290afd52c8543dd" },
     { name = "scikit-image", specifier = "==0.25.2" },
     { name = "statsmodels", specifier = ">=0.14.0" },
     { name = "streamlit", specifier = "==1.45.1" },

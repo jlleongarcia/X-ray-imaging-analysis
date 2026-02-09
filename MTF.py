@@ -198,8 +198,14 @@ def _create_mtf_chart(df_mtf, mtf_results, has_comparison):
     title = 'Modulation Transfer Function (IEC 62220-1-1:2015)'
     
     if has_comparison:
-        color_encoding = alt.Color('Image:N', legend=alt.Legend(title="Image"), 
-                                   scale=alt.Scale(range=['steelblue', 'orange']))
+        # Check if geometric mean is present
+        has_geom_mean = 'Geometric Mean (Isotropic)' in df_mtf['Image'].values
+        if has_geom_mean:
+            color_encoding = alt.Color('Image:N', legend=alt.Legend(title="Image"), 
+                                       scale=alt.Scale(range=['steelblue', 'orange', 'green']))
+        else:
+            color_encoding = alt.Color('Image:N', legend=alt.Legend(title="Image"), 
+                                       scale=alt.Scale(range=['steelblue', 'orange']))
         chart = alt.Chart(df_mtf).mark_line(clip=True).encode(x=x_encoding, y=y_encoding, color=color_encoding)
     else:
         chart = alt.Chart(df_mtf).mark_line(clip=True, color='steelblue').encode(x=x_encoding, y=y_encoding)

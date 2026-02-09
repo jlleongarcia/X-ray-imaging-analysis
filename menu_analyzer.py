@@ -13,6 +13,7 @@ from threshold_contrast import display_threshold_contrast_section
 from comparison_tool import display_comparison_tool_section
 from dicomizer import generate_dicom_from_raw
 from detector_conversion import display_detector_conversion_section
+from DQE import display_dqe_analysis_section
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(page_title="X-ray Image Analysis Toolkit", layout="wide")
@@ -71,9 +72,42 @@ def main_app_ui():
     # Always display session state status in the sidebar for debugging
     st.sidebar.markdown("---")
     st.sidebar.subheader("Saved Analysis Data Status")
+    
+    # Detector conversion status
     _dc = st.session_state['detector_conversion']
     _dc_loaded = isinstance(_dc, dict) and (_dc.get('predict_mpv') is not None)
-    st.sidebar.write(f"Detector Conversion Fn: {'Loaded ✅' if _dc_loaded else 'Missing ⚠️'}")
+    st.sidebar.write(f"Detector Conversion: {'✅ Cached' if _dc_loaded else '⚠️ Missing'}")
+    
+    # MTF cache status
+    _mtf_cache = st.session_state.get('mtf_cache')
+    if _mtf_cache and isinstance(_mtf_cache, dict):
+        _mtf_results = _mtf_cache.get('results', [])
+        _geom_mean = _mtf_cache.get('mtf_geometric_mean')
+        if _geom_mean and _geom_mean.get('available'):
+            st.sidebar.write(f"MTF: ✅ {len(_mtf_results)} measurements (Geometric mean)")
+        else:
+            st.sidebar.write(f"MTF: ⚠️ {len(_mtf_results)} measurements (No geometric mean)")
+    else:
+        st.sidebar.write("MTF: ⚠️ Not computed")
+    
+    # NPS cache status
+    _nps_cache = st.session_state.get('nps_cache')
+    if _nps_cache and isinstance(_nps_cache, dict):
+        _kerma = _nps_cache.get('kerma_ugy', 'N/A')
+        st.sidebar.write(f"NPS: ✅ Cached (K = {_kerma:.2f} μGy)")
+    else:
+        st.sidebar.write("NPS: ⚠️ Not computed")
+    
+    # DQE status (computed on-demand, not cached)
+    if _mtf_cache and _nps_cache:
+        _mtf_valid = _mtf_cache.get('mtf_geometric_mean', {}).get('available', False)
+        if _mtf_valid:
+            st.sidebar.write("DQE: ✅ Ready to compute")
+        else:
+            st.sidebar.write("DQE: ⚠️ Need orthogonal MTF")
+    else:
+        st.sidebar.write("DQE: ⚠️ Need MTF + NPS")
+    
     st.sidebar.markdown("---")
 
     # --- File Upload and Initial Image Display ---
@@ -356,8 +390,8 @@ def main_app_ui():
         
         elif analysis_category == "Flat Panel Analysis":
             # Sub-category tabs for flat panel analyses
-            tab_detector, tab_uniformity, tab_nps, tab_mtf, tab_contrast = st.tabs([
-                "Detector Conversion", "Uniformity", "NPS", "MTF", "Contrast"
+            tab_detector, tab_uniformity, tab_nps, tab_mtf, tab_dqe, tab_contrast = st.tabs([
+                "Detector Conversion", "Uniformity", "NPS", "MTF", "DQE", "Contrast"
             ])
 
             with tab_detector:
@@ -396,6 +430,9 @@ def main_app_ui():
             with tab_contrast:
                 display_threshold_contrast_section(image_array, pixel_spacing_row, pixel_spacing_col)
 
+            with tab_dqe:
+                display_dqe_analysis_section()
+
     elif uploaded_files: # This handles the comparison case where image_array is not pre-loaded
         # If files are uploaded but no single image array was created, it's the comparison tool case.
         st.header("Developer: Compare RAW vs DICOM")
@@ -410,6 +447,11 @@ def main_app_ui():
         st.session_state['detector_conversion'] = None
         # Also clear structured detector results if present
         st.session_state['detector_conv'] = None
+        # Clear MTF and NPS caches
+        if 'mtf_cache' in st.session_state:
+            del st.session_state['mtf_cache']
+        if 'nps_cache' in st.session_state:
+            del st.session_state['nps_cache']
         st.success("All saved analysis data cleared!")
         st.rerun() # Rerun to reflect the cleared state
 

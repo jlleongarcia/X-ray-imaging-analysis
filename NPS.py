@@ -25,6 +25,60 @@ def _central_roi_mean(image: np.ndarray, roi_size: int) -> float:
     roi = image[y0:y0+roi_h, x0:x0+roi_w]
     return float(np.mean(roi)) if roi.size else np.nan
 
+def _autodetect_kerma_from_detector_conversion(image: np.ndarray, default_kerma: float = 2.5) -> float:
+    """Auto-detect kerma value using detector conversion cache.
+    
+    Uses central 100×100 ROI mean pixel value and applies inverse detector 
+    conversion function to estimate air kerma.
+    
+    Args:
+        image: Input image array
+        default_kerma: Default value to return if auto-detection fails
+    
+    Returns:
+        Estimated kerma in μGy, or default_kerma if detection unavailable
+    """
+    if 'detector_conversion' not in st.session_state:
+        return default_kerma
+    
+    try:
+        # Extract central 100×100 ROI mean
+        central_mpv = _central_roi_mean(image, roi_size=100)
+        if not np.isfinite(central_mpv):
+            return default_kerma
+        
+        # Get detector conversion parameters
+        det_conv = st.session_state['detector_conversion']
+        fit_params = det_conv.get('fit_params', {})
+        
+        # Try MPV->Kerma conversion
+        if 'MPV_vs_Kerma' in fit_params:
+            params = fit_params['MPV_vs_Kerma']
+            a = params.get('a', 0)
+            b = params.get('b', 0)
+            func_type = params.get('func_type', 'linear')
+            
+            if func_type == 'linear' and a != 0:
+                # Inverse: k = (m - b) / a
+                kerma_estimate = (central_mpv - b) / a
+            elif func_type == 'exponential' and a != 0:
+                # Inverse: k = (ln(m) - b) / a
+                if central_mpv > 0:
+                    kerma_estimate = (np.log(central_mpv) - b) / a
+                else:
+                    return default_kerma
+            else:
+                return default_kerma
+            
+            # Sanity check (kerma should be positive and reasonable)
+            if 0.1 <= kerma_estimate <= 100:  # typical range for DR systems
+                return float(kerma_estimate)
+    
+    except Exception:
+        pass
+    
+    return default_kerma
+
 def _try_load_dicom(data: bytes) -> Optional[np.ndarray]:
     """Attempt to load image data as DICOM.
     
@@ -547,6 +601,33 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         on_change=_bump_nps_refresh,
     )
 
+    # Kerma input with auto-detection
+    st.markdown("---")
+    st.markdown("### Air Kerma (for DQE Analysis)")
+    
+    # Auto-detect kerma from detector conversion if available
+    detected_kerma = _autodetect_kerma_from_detector_conversion(image_array, default_kerma=2.5)
+    
+    if detected_kerma != 2.5 and 'detector_conversion' in st.session_state:
+        st.success(f"✅ Auto-detected kerma from detector conversion: {detected_kerma:.2f} μGy")
+    
+    # Initialize session state for kerma
+    if 'nps_kerma_value' not in st.session_state:
+        st.session_state['nps_kerma_value'] = detected_kerma
+    
+    kerma_value = st.number_input(
+        "Air Kerma (μGy)",
+        min_value=0.01,
+        max_value=1000.0,
+        value=float(st.session_state.get('nps_kerma_value', detected_kerma)),
+        step=0.1,
+        format="%.2f",
+        key='nps_kerma_input',
+        on_change=_bump_nps_refresh,
+        help="Air kerma value used for DQE computation. Auto-detected from detector conversion if available."
+    )
+    st.session_state['nps_kerma_value'] = kerma_value
+
     # Add button to trigger NPS calculation
     st.markdown("---")
     if not st.button("Calculate NPS", key="nps_calculate_button"):
@@ -561,6 +642,14 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                                                  big_roi_size=big_roi, small_roi_size=small_roi)
         # Mark last recompute time
         st.session_state['nps_last_updated'] = time.time()
+        
+        # Store results in session state cache with kerma value
+        if "NPS_Status" not in nps_results_dict or "Error" not in nps_results_dict.get("NPS_Status", ""):
+            st.session_state['nps_cache'] = {
+                'results': nps_results_dict,
+                'kerma_ugy': kerma_value,
+                'timestamp': time.time()
+            }
 
     if "NPS_Status" in nps_results_dict and "Error" in nps_results_dict["NPS_Status"]:
         st.error(f"NPS Calculation Failed: {nps_results_dict['NPS_Status']}")

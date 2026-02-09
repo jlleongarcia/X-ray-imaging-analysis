@@ -4,6 +4,7 @@ import pandas as pd
 import altair as alt
 import pydicom
 import io
+import time
 
 try:
     from pylinac.core.mtf import EdgeMTF
@@ -14,6 +15,52 @@ except ImportError:
 def _bump_mtf_refresh():
     """Callback to force a Streamlit rerun when MTF inputs change."""
     st.session_state['mtf_refresh'] = st.session_state.get('mtf_refresh', 0) + 1
+
+def _compute_geometric_mean_mtf(mtf_results_list):
+    """Compute geometric mean of two orthogonal MTF measurements.
+    
+    Args:
+        mtf_results_list: List of MTF results with different orientations
+    
+    Returns:
+        Dict with geometric mean MTF or None if requirements not met
+    """
+    if len(mtf_results_list) != 2:
+        return None
+    
+    # Check if we have one vertical and one horizontal edge
+    orientations = [r.get('is_vertical') for r in mtf_results_list]
+    if True not in orientations or False not in orientations:
+        return None  # Need one of each
+    
+    # Identify vertical and horizontal
+    mtf_vertical = mtf_results_list[0] if mtf_results_list[0]['is_vertical'] else mtf_results_list[1]
+    mtf_horizontal = mtf_results_list[0] if not mtf_results_list[0]['is_vertical'] else mtf_results_list[1]
+    
+    # Get frequency arrays
+    freq_v = np.array(mtf_vertical['frequencies'])
+    mtf_v = np.array(mtf_vertical['mtf_values'])
+    freq_h = np.array(mtf_horizontal['frequencies'])
+    mtf_h = np.array(mtf_horizontal['mtf_values'])
+    
+    # Create common frequency grid (use minimum Nyquist)
+    max_freq = min(freq_v.max(), freq_h.max())
+    common_freq = np.linspace(0, max_freq, 200)
+    
+    # Interpolate both MTFs to common grid
+    mtf_v_interp = np.interp(common_freq, freq_v, mtf_v)
+    mtf_h_interp = np.interp(common_freq, freq_h, mtf_h)
+    
+    # Compute geometric mean
+    mtf_geometric_mean = np.sqrt(mtf_v_interp * mtf_h_interp)
+    
+    return {
+        'frequencies': common_freq.tolist(),
+        'mtf_values': mtf_geometric_mean.tolist(),
+        'available': True,
+        'mtf_vertical': {'filename': mtf_vertical['filename'], 'angle': mtf_vertical['edge_angle_deg']},
+        'mtf_horizontal': {'filename': mtf_horizontal['filename'], 'angle': mtf_horizontal['edge_angle_deg']}
+    }
 
 
 def calculate_mtf_metrics(edge_roi: np.ndarray, pixel_spacing: float) -> dict:
@@ -276,6 +323,13 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         return
 
     st.success("✅ MTF Analysis Complete!")
+    
+    # Store results in session state cache
+    st.session_state['mtf_cache'] = {
+        'results': all_mtf_results,
+        'timestamp': time.time(),
+        'mtf_geometric_mean': _compute_geometric_mean_mtf(all_mtf_results)
+    }
 
     # Display edge detection information for each image
     for mtf_results in all_mtf_results:
@@ -305,6 +359,17 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         df = pd.DataFrame(mtf_chart_data_plot, columns=["Frequency", "MTF"])
         df['Image'] = mtf_results['filename']
         dfs_to_concat.append(df)
+    
+    # Add geometric mean curve if available
+    geom_mean = st.session_state['mtf_cache'].get('mtf_geometric_mean')
+    if geom_mean and geom_mean.get('available'):
+        df_geom = pd.DataFrame({
+            'Frequency': geom_mean['frequencies'],
+            'MTF': geom_mean['mtf_values'],
+            'Image': 'Geometric Mean (Isotropic)'
+        })
+        dfs_to_concat.append(df_geom)
+        st.success("✅ Orthogonal edges detected! Geometric mean MTF computed for DQE analysis.")
     
     df_mtf = pd.concat(dfs_to_concat, ignore_index=True)
     

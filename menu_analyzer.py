@@ -84,9 +84,9 @@ def main_app_ui():
         _mtf_results = _mtf_cache.get('results', [])
         _geom_mean = _mtf_cache.get('mtf_geometric_mean')
         if _geom_mean and _geom_mean.get('available'):
-            st.sidebar.write(f"MTF: ✅ {len(_mtf_results)} measurements (Geometric mean)")
+            st.sidebar.write(f"MTF: ✅ {len(_mtf_results)} measurements + Geometric mean")
         else:
-            st.sidebar.write(f"MTF: ⚠️ {len(_mtf_results)} measurements (No geometric mean)")
+            st.sidebar.write(f"MTF: ⚠️ Not enough measurements for geometric mean")
     else:
         st.sidebar.write("MTF: ⚠️ Not computed")
     

@@ -407,6 +407,38 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                 val = mtf_results.get(key, 'N/A')
                 val_str = f"{val:.3f}" if isinstance(val, (int, float)) and np.isfinite(val) else "N/A"
                 st.metric(label, f"{val_str} {mtf_results['x_axis_unit']}")
+    
+    # Geometric Mean MTF Metrics
+    geom_mean = st.session_state['mtf_cache'].get('mtf_geometric_mean')
+    if geom_mean and geom_mean.get('available'):
+        st.subheader("MTF Metrics - Geometric Mean (Isotropic)")
+        
+        # Calculate MTF50 and MTF10 for geometric mean
+        freq_geom = np.array(geom_mean['frequencies'])
+        mtf_geom = np.array(geom_mean['mtf_values'])
+        
+        try:
+            mtf50_geom = freq_geom[np.where(mtf_geom <= 0.5)[0][0]] if np.any(mtf_geom <= 0.5) else np.nan
+        except (IndexError, Exception):
+            mtf50_geom = np.nan
+        
+        try:
+            mtf10_geom = freq_geom[np.where(mtf_geom <= 0.1)[0][0]] if np.any(mtf_geom <= 0.1) else np.nan
+        except (IndexError, Exception):
+            mtf10_geom = np.nan
+        
+        nyquist_geom = freq_geom[-1] if len(freq_geom) > 0 else np.nan
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            val_str = f"{mtf50_geom:.3f}" if np.isfinite(mtf50_geom) else "N/A"
+            st.metric("MTF 50%", f"{val_str} {all_mtf_results[0]['x_axis_unit']}")
+        with col2:
+            val_str = f"{mtf10_geom:.3f}" if np.isfinite(mtf10_geom) else "N/A"
+            st.metric("MTF 10%", f"{val_str} {all_mtf_results[0]['x_axis_unit']}")
+        with col3:
+            val_str = f"{nyquist_geom:.3f}" if np.isfinite(nyquist_geom) else "N/A"
+            st.metric("Nyquist Freq", f"{val_str} {all_mtf_results[0]['x_axis_unit']}")
 
     # ESF and LSF plots
     with st.expander("View Edge & Line Spread Functions"):

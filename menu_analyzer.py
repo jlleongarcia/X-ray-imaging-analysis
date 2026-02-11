@@ -131,6 +131,7 @@ def main_app_ui():
                     "files_needed": "3+ RAW images at different exposures",
                     "file_types": "RAW/STD files only",
                     "requirements": ["Multiple RAW files", "Different exposure levels", "Same detector settings"],
+                    "computation": "Uses least-squares fitting to establish: $MPV = f(K_{air})$ and $EI = f(K_{air})$. Enables conversion from detector units to air kerma for subsequent analyses.\n\n Provides detailed noise components analysis by Weighted Robust Linear Models to separate quantum noise, electronic noise, and structural noise. Forces parameters to be non-negative.",
                     "icon": "📈"
                 },
                 "Uniformity Analysis": {
@@ -138,6 +139,7 @@ def main_app_ui():
                     "files_needed": "1 flat-field image",
                     "file_types": "RAW/STD files only",
                     "requirements": ["Uniform exposure", "No phantom objects", "Covers full detector area"],
+                    "computation": "Calculates uniformity metrics within a central 80% area ROI using a sliding 30mm × 30mm window.\n\n**MPV Global Uniformity:**\n$$U_{global} = max\left(\\frac{|MPV_{ij}-MVP|}{MPV}\\right)$$\n\n**MPV Local Uniformity:**\n$$U_{local} = max\left(\\frac{|MPV_{ij}-MVP_{8n}|}{MPV_{8n}}\\right)$$\n\n**SNR Global Uniformity:**\n$$SNR_{global} = max\left(\\frac{|SNR_{ij}-SNR|}{SNR}\\right)$$\n\n**SNR Local Uniformity:**\n$$SNR_{local} = max\left(\\frac{|SNR_{ij}-SNR_{8n}|}{SNR_{8n}}\\right)$$",
                     "icon": "🔲"
                 },
                 "MTF (Sharpness)": {
@@ -145,6 +147,7 @@ def main_app_ui():
                     "files_needed": "1-2 images with edge/slit phantom",
                     "file_types": "RAW/STD files only",
                     "requirements": ["Edge or slit phantom", "Sharp edge visible", "2 orthogonal edges for DQE analysis"],
+                    "computation": "IEC 62220-1-1:2015 slanted edge method. Uses Hough transform for edge detection, computes Edge Spread Function (ESF), differentiates to get Line Spread Function: $LSF = \\frac{dESF}{dx}$, then Fourier transform: $MTF(f) = |\\mathcal{F}\\{LSF\\}|$. Reports $MTF_{10\\%}$ and $MTF_{50\\%}$ as key metrics.",
                     "icon": "📐"
                 },
                 "NPS (Noise)": {
@@ -152,6 +155,7 @@ def main_app_ui():
                     "files_needed": "1+ uniform images",
                     "file_types": "RAW/STD files only",
                     "requirements": ["Uniform exposure", "Multiple images recommended", "Known air kerma value"],
+                    "computation": "IEC 62220-1-1:2015 standard. Extracts $N \\times N$ ROIs, applies 2D FFT to each ROI, averages power spectra. Normalizes: $$NPS(u,v) = \\frac{\\Delta x \\Delta y}{N_x N_y} |FFT|^2$$ Computes radial profile and integrates for total noise.",
                     "icon": "📡"
                 },
                 "DQE (Detective Quantum Efficiency)": {
@@ -159,6 +163,7 @@ def main_app_ui():
                     "files_needed": "Requires MTF + NPS results",
                     "file_types": "Uses cached results",
                     "requirements": ["MTF from orthogonal edges", "NPS computed", "Known air kerma value"],
+                    "computation": "IEC 62220-1-1:2015 formula: $$DQE(f) = \\frac{MTF^2(f)}{NPS(f) \\cdot K_{air}}$$ \n\n Where: \n\n- $\\text{MTF}(f)$ = Modulation Transfer Function (geometric mean of orthogonal edges) \n\n - $\\text{NNPS}(f)$ = Normalized Noise Power Spectrum (radial average) \n\n - $K_{air}$ = Air kerma in μGy \n\n - $f$ = Spatial frequency in lp/mm",
                     "icon": "🎯"
                 },
                 "Threshold Contrast": {
@@ -166,6 +171,7 @@ def main_app_ui():
                     "files_needed": "1 image with contrast phantom",
                     "file_types": "RAW/STD files only",
                     "requirements": ["Uniform exposure", "No phantom objects", "Covers full detector area"],
+                    "computation": "Computes Threshold-Contrast Detail Detectability by statistical analysis, based on Paruccini et al. (2021, https://doi.org/10.1016/j.ejmp.2021.10.007) report.",
                     "icon": "🎭"
                 }
             }
@@ -179,6 +185,7 @@ def main_app_ui():
                     "files_needed": "1 image file",
                     "file_types": "RAW, STD, or any image format",
                     "requirements": ["Image file to convert", "Pixel spacing (optional)", "Custom metadata (optional)"],
+                    "computation": "Creates DICOM-compliant file using pydicom library. Embeds pixel data, image dimensions, and metadata. Sets PresentationIntentType='FOR PROCESSING' tag. Generates SOP Instance UID and dataset identifiers per DICOM standard.",
                     "icon": "🏥"
                 },
                 "RAW vs DICOM Comparison": {
@@ -186,6 +193,7 @@ def main_app_ui():
                     "files_needed": "2 files (1 RAW + 1 DICOM)",
                     "file_types": "1 RAW + 1 DICOM file",
                     "requirements": ["Same image in both formats", "RAW parameters known", "DICOM has metadata"],
+                    "computation": "Pixel-by-pixel comparison between RAW and DICOM arrays. Computes difference map, calculates statistics (mean, max, RMSE). Visualizes discrepancies via difference histogram and spatial difference map. Validates data integrity post-conversion.",
                     "icon": "⚖️"
                 }
             }
@@ -252,15 +260,17 @@ def main_app_ui():
             st.subheader(f"{selected_test_info['icon']} {st.session_state['selected_test']}")
             st.markdown(f"*{selected_test_info['description']}*")
             
-            # Requirements Card
+            # Requirements and Computation Card
             requirements_list = '\n'.join([f"- {req}" for req in selected_test_info['requirements']])
+            computation_text = f"""\n\n**Computation:**\n\n{selected_test_info['computation']}""" if 'computation' in selected_test_info else ""
+            
             st.info(f"""**📋 Requirements:**
 - **Files needed:** {selected_test_info['files_needed']}
 - **File types:** {selected_test_info['file_types']}
 
 **Details:**
 
-{requirements_list}
+{requirements_list}{computation_text}
 """)
             
             # Now show the upload section
@@ -325,7 +335,7 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
     unknown_files = [f for f, ftype in file_types if ftype == 'unknown']
     
     # Show file detection info in expander
-    with st.expander("📁 Uploaded Files", expanded=True):
+    with st.expander("📁 Uploaded Files", expanded=False):
         for f, ftype in file_types:
             if ftype == 'dicom':
                 st.success(f"🏥 {f.name} → DICOM (FOR PRESENTATION)")

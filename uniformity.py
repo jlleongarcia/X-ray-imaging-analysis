@@ -354,10 +354,6 @@ def display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_sp
     # It assumes image_array, pixel_spacing_row, and pixel_spacing_col are already available.
 
     st.subheader("Uniformity Analysis")
-    st.write("""
-    Calculates uniformity metrics (Global/Local Pixel Value Uniformity, Global/Local SNR Uniformity)
-    within a central 80% area ROI using a sliding 30mm x 30mm window.
-    """)
 
     if pixel_spacing_row is not None and pixel_spacing_col is not None:
         if st.button("Run Uniformity Analysis"):

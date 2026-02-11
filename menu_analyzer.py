@@ -68,6 +68,12 @@ def main_app_ui():
     # Ensure detector conversion cache key exists (stores predict_mpv and fit metadata)
     if 'detector_conversion' not in st.session_state:
         st.session_state['detector_conversion'] = None
+    
+    # Initialize selected category and test in session state
+    if 'selected_category' not in st.session_state:
+        st.session_state['selected_category'] = None
+    if 'selected_test' not in st.session_state:
+        st.session_state['selected_test'] = None
 
     # Always display session state status in the sidebar for debugging
     st.sidebar.markdown("---")
@@ -110,263 +116,273 @@ def main_app_ui():
     
     st.sidebar.markdown("---")
 
-    # --- File Upload and Initial Image Display ---
-    # Use a key for the file uploader to manage its state explicitly
-    uploaded_files = st.sidebar.file_uploader(
-        "Choose DICOM (.dcm), RAW/STD (.raw/.std) files, or extensionless files",
-        type=None,  # Accept all file types including extensionless
-        accept_multiple_files=True,
-        help="Maximum file size: 500 MB per file"
-    )
-
-    image_array = None
-    pixel_spacing_row = None
-    pixel_spacing_col = None
-    dicom_filename = None
-    dicom_dataset = None  # Store the full dataset, will be None for RAW
-
-    if uploaded_files:
-        # Determine file types by content and extension
-        file_types = []
-        for f in uploaded_files:
-            file_bytes = f.getvalue()
-            detected_type = detect_file_type(file_bytes, f.name)
-            file_types.append((f, detected_type))
-        
-        # Categorize files
-        dicom_files = [f for f, ftype in file_types if ftype == 'dicom']
-        raw_files = [f for f, ftype in file_types if ftype == 'raw']
-        unknown_files = [f for f, ftype in file_types if ftype == 'unknown']
-        
-        # Show info about detected file types
-        if uploaded_files:
-            st.sidebar.markdown("**Detected file types:**")
-            for f, ftype in file_types:
-                if ftype == 'dicom':
-                    st.sidebar.write(f"🏥 {f.name} → DICOM (FOR PRESENTATION)")
-                elif ftype == 'raw':
-                    ext = os.path.splitext(f.name)[1].lower()
-                    if ext in ['.dcm', '.dicom']:
-                        st.sidebar.write(f"📷 {f.name} → RAW (FOR PROCESSING)")
-                    elif ext:
-                        st.sidebar.write(f"📷 {f.name} → RAW/STD")
-                    else:
-                        st.sidebar.write(f"📷 {f.name} → RAW (extensionless)")
-                else:
-                    st.sidebar.write(f"❓ {f.name} → Unknown")
-        
-        # Debug information for DICOM tag checking
-        if uploaded_files and st.sidebar.checkbox("Show DICOM Debug Info", value=False):
-            st.sidebar.markdown("**Debug Info:**")
-            for f, ftype in file_types:
-                try:
-                    ds = pydicom.dcmread(io.BytesIO(f.getvalue()), force=True, stop_before_pixels=True)
-                    if hasattr(ds, 'PresentationIntentType'):
-                        intent = ds.PresentationIntentType
-                        st.sidebar.write(f"🔍 {f.name}: PresentationIntentType = '{intent}'")
-                    else:
-                        st.sidebar.write(f"🔍 {f.name}: No PresentationIntentType tag")
-                except Exception as e:
-                    st.sidebar.write(f"🔍 {f.name}: Not DICOM or parse error")
-        
-        # Show warning for unknown files
-        if unknown_files:
-            st.sidebar.warning(f"Unknown file types detected: {[f.name for f in unknown_files]}")
-        
-        is_dicom_upload = len(dicom_files) > 0
-        is_raw_upload = len(raw_files) > 0
-        
-        # Check for mixed file types and show error (except for comparison tool)
-        if is_dicom_upload and is_raw_upload:
-            st.sidebar.error("⚠️ Mixed file types detected! Please upload only one type of files (either all RAW or all DICOM). Note: You can still use the comparison tool to compare RAW vs DICOM files.")
-            if st.sidebar.button("Use Comparison Tool Instead"):
-                st.header("Developer: Compare RAW vs DICOM")
-                display_comparison_tool_section(uploaded_files)
-                return
-            else:
-                return  # Stop processing until user fixes the upload
-        
-        # The comparison tool handles mixed files. For all other analyses, we only allow one type.
-        is_comparison_candidate = is_raw_upload and is_dicom_upload
-
-        if is_raw_upload and not is_dicom_upload:
-            # Allow uploading multiple RAW/STD files. Use detected raw files.
-            if not raw_files:
-                st.error("No RAW/STD files found in upload.")
-                return
-
-            # Default to the first RAW file if multiple are uploaded
-            selected_raw = raw_files[0]
-
-            # --- RAW or DICOM (forced) Processing ---
-            raw_file = selected_raw
-            dicom_filename = raw_file.name
-
-            # Read bytes once for detection and later processing
-            raw_data = raw_file.getvalue()
-
-            # Heuristic: detect DICOM-like content even for .raw/.std
-            dicom_suspected = False
-            try:
-                if len(raw_data) >= 132 and raw_data[128:132] == b'DICM':
-                    dicom_suspected = True
-                else:
-                    # Try parsing header only (no pixel decode) with force
-                    ds_hdr = pydicom.dcmread(io.BytesIO(raw_data), force=True, stop_before_pixels=True)
-                    if hasattr(ds_hdr, 'Rows') and hasattr(ds_hdr, 'Columns'):
-                        dicom_suspected = True
-            except Exception:
-                pass
-
-            # Let user choose interpretation: RAW/STD (by extension) or DICOM
-            interpret_options = ["RAW/STD", "DICOM"]
-            default_index = 1 if dicom_suspected else 0
-            interpret_choice = st.sidebar.radio(
-                "Interpret uploaded file as:", options=interpret_options, index=default_index,
-                help="If your file is actually a DICOM saved with .raw/.std extension, choose DICOM to parse headers.", key="interpret_choice_raw"
-            )
-            if dicom_suspected:
-                st.sidebar.caption("DICOM-like header detected; defaulted to DICOM.")
-
-            if interpret_choice == "DICOM":
-                # Try to parse as DICOM even without preamble
-                try:
-                    ds = pydicom.dcmread(io.BytesIO(raw_data), force=True)
-                    dicom_dataset = ds
-                    dicom_filename = raw_file.name
-                    # Extract pixel spacing if available
-                    ps = getattr(ds, 'PixelSpacing', None)
-                    if ps and len(ps) >= 2:
-                        pixel_spacing_row = float(ps[0])
-                        pixel_spacing_col = float(ps[1])
-                    # Pixel data
-                    image_array = ds.pixel_array
-                    st.sidebar.success("Parsed as DICOM (forced). Using Rows/Columns from header.")
-                except Exception as e:
-                    st.sidebar.error(f"Failed to parse as DICOM: {e}")
-                    return
-            else:
-                # RAW/STD interpretation path
-                dtype_map = {
-                    '16-bit Unsigned Integer': np.uint16,
-                    '8-bit Unsigned Integer': np.uint8,
-                    '32-bit Float': np.float32
+    # --- MAIN PAGE: CATEGORY AND TEST SELECTION ---
+    st.title("🔬 X-ray Image Analysis Toolkit")
+    st.markdown("### Welcome! Select an analysis to get started")
+    
+    # Define analysis categories and their tests
+    analysis_catalog = {
+        "Flat Panel QA": {
+            "icon": "📊",
+            "description": "Quality assessment tests for flat panel detectors",
+            "tests": {
+                "Detector Response Curve": {
+                    "description": "Calibrate detector pixel values to radiation dose",
+                    "files_needed": "3+ RAW images at different exposures",
+                    "file_types": "RAW/STD files only",
+                    "requirements": ["Multiple RAW files", "Different exposure levels", "Same detector settings"],
+                    "icon": "📈"
+                },
+                "Uniformity Analysis": {
+                    "description": "Measure spatial uniformity across detector area",
+                    "files_needed": "1 flat-field image",
+                    "file_types": "RAW/STD files only",
+                    "requirements": ["Uniform exposure", "No phantom objects", "Covers full detector area"],
+                    "icon": "🔲"
+                },
+                "MTF (Sharpness)": {
+                    "description": "Measure spatial resolution and sharpness",
+                    "files_needed": "1-2 images with edge/slit phantom",
+                    "file_types": "RAW/STD files only",
+                    "requirements": ["Edge or slit phantom", "Sharp edge visible", "2 orthogonal edges for DQE analysis"],
+                    "icon": "📐"
+                },
+                "NPS (Noise)": {
+                    "description": "Characterize noise power spectrum",
+                    "files_needed": "1+ uniform images",
+                    "file_types": "RAW/STD files only",
+                    "requirements": ["Uniform exposure", "Multiple images recommended", "Known air kerma value"],
+                    "icon": "📡"
+                },
+                "DQE (Detective Quantum Efficiency)": {
+                    "description": "Calculate overall detector quality metric",
+                    "files_needed": "Requires MTF + NPS results",
+                    "file_types": "Uses cached results",
+                    "requirements": ["MTF from orthogonal edges", "NPS computed", "Known air kerma value"],
+                    "icon": "🎯"
+                },
+                "Threshold Contrast": {
+                    "description": "Measure low-contrast detectability",
+                    "files_needed": "1 image with contrast phantom",
+                    "file_types": "RAW/STD files only",
+                    "requirements": ["Uniform exposure", "No phantom objects", "Covers full detector area"],
+                    "icon": "🎭"
                 }
-                dtype_str = st.sidebar.selectbox(
-                    "Pixel Data Type",
-                    options=list(dtype_map.keys()),
-                    index=0,
-                    key="raw_dtype",
-                    help="Select the data type first to auto-suggest dimensions."
-                )
-                np_dtype = dtype_map[dtype_str]
-
-                itemsize = np.dtype(np_dtype).itemsize
-                file_size = len(raw_data)
-
-                if file_size % itemsize != 0:
-                    st.sidebar.error(f"File size ({file_size} bytes) is not a multiple of the pixel size ({itemsize} bytes). Please check the selected data type.")
-                    return
-
-                total_pixels = file_size // itemsize
-
-                def get_factors(n):
-                    factors = set()
-                    for i in range(1, int(np.sqrt(n)) + 1):
-                        if n % i == 0:
-                            factors.add((i, n // i))
-                            factors.add((n // i, i))
-                    return sorted(list(factors))
-
-                possible_dims = get_factors(total_pixels)
-
-                if not possible_dims:
-                    st.sidebar.error(f"Could not determine valid dimensions for {total_pixels} pixels.")
-                    return
-
-                # Filter to keep only reasonable aspect ratios (width/height between 1/3 and 3)
-                reasonable_dims = []
-                for h, w in possible_dims:
-                    aspect_ratio = w / h
-                    if 1/3 <= aspect_ratio <= 3:
-                        reasonable_dims.append((h, w))
-                
-                if not reasonable_dims:
-                    # Fallback to all dims if filtering removed everything
-                    reasonable_dims = possible_dims
-                    st.sidebar.warning("No square-like dimensions found. Showing all possibilities.")
-                
-                # Find the most "square" dimension as default
-                default_dim_index = len(reasonable_dims) // 2
-                
-                # Format dimensions for dropdown display
-                dim_options = [f"{w} x {h}" for h, w in reasonable_dims]
-                
-                # Let user select from dropdown
-                selected_dim = st.sidebar.selectbox(
-                    "Image Dimensions (Width x Height)",
-                    options=dim_options,
-                    index=default_dim_index,
-                    key="raw_dimensions",
-                    help="Auto-detected dimensions. Showing only square-like options (aspect ratio between 1:3 and 3:1)."
-                )
-                
-                # Parse selected dimensions
-                width, height = map(int, selected_dim.split(" x "))
-                st.sidebar.caption(f"Selected: **{width} x {height}** pixels ({width * height:,} total pixels)")
-
-                pixel_spacing_row = st.sidebar.number_input("Pixel Spacing Row (mm/px)", min_value=0.001, value=0.1, step=0.01, format="%.3f", key="raw_ps_row")
-                pixel_spacing_col = st.sidebar.number_input("Pixel Spacing Col (mm/px)", min_value=0.001, value=0.1, step=0.01, format="%.3f", key="raw_ps_col")
-
-                image_array = np.frombuffer(raw_data, dtype=np_dtype).reshape((height, width))
-                st.sidebar.success("RAW file loaded successfully.")
-
-            # --- "Dicomize" Feature ---
-    if image_array is not None: # Standard analysis path
-        st.header(f"Analysis for: {dicom_filename}")
-        if pixel_spacing_row and pixel_spacing_col:
-            st.write(f"Pixel Spacing: {pixel_spacing_row:.3f} mm/px (row) x {pixel_spacing_col:.3f} mm/px (col)")
-        else:
-            st.write("Pixel Spacing: Not available. Some analyses may be disabled or use pixel-based units.")
-
-        # --- DICOM Header Information and Raw Data Option ---
-        if dicom_dataset is not None:
-            st.subheader("DICOM Image Properties")
-
-            # Only display whether the image is DERIVED or not; other tag displays were removed.
-            image_type = getattr(dicom_dataset, 'ImageType', ['UNKNOWN'])
-            is_derived = 'DERIVED' in image_type
-            is_primary = 'PRIMARY' in image_type or 'ORIGINAL' in image_type
-            if is_derived:
-                st.warning("This image is 'DERIVED' — it has undergone processing from original data.")
-            elif is_primary:
-                st.success("This image appears to be original or suffered minimal processing.")
-            else:
-                st.info("Image processing cannot be checked.")
-
-        else:  # This is a RAW/STD file
-            st.info("This is a RAW/STD image file. Analysis will be performed directly on the pixel data using the parameters you provided in the sidebar.")
-        
-        # --- Analysis Type Selection ---
+            }
+        },
+        "Developer Tools": {
+            "icon": "🛠️",
+            "description": "File conversion and comparison utilities",
+            "tests": {
+                "Convert to DICOM": {
+                    "description": "Convert RAW/image files to DICOM format",
+                    "files_needed": "1 image file",
+                    "file_types": "RAW, STD, or any image format",
+                    "requirements": ["Image file to convert", "Pixel spacing (optional)", "Custom metadata (optional)"],
+                    "icon": "🏥"
+                },
+                "RAW vs DICOM Comparison": {
+                    "description": "Compare RAW and DICOM versions of same image",
+                    "files_needed": "2 files (1 RAW + 1 DICOM)",
+                    "file_types": "1 RAW + 1 DICOM file",
+                    "requirements": ["Same image in both formats", "RAW parameters known", "DICOM has metadata"],
+                    "icon": "⚖️"
+                }
+            }
+        }
+    }
+    
+    # Step 1: Category Selection
+    st.markdown("---")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button(
+            f"{analysis_catalog['Flat Panel QA']['icon']} **Flat Panel QA**\n\n{analysis_catalog['Flat Panel QA']['description']}", 
+            use_container_width=True,
+            type="primary" if st.session_state['selected_category'] == "Flat Panel QA" else "secondary"
+        ):
+            st.session_state['selected_category'] = "Flat Panel QA"
+            st.session_state['selected_test'] = None  # Reset test selection
+            st.rerun()
+    
+    with col2:
+        if st.button(
+            f"{analysis_catalog['Developer Tools']['icon']} **Developer Tools**\n\n{analysis_catalog['Developer Tools']['description']}", 
+            use_container_width=True,
+            type="primary" if st.session_state['selected_category'] == "Developer Tools" else "secondary"
+        ):
+            st.session_state['selected_category'] = "Developer Tools"
+            st.session_state['selected_test'] = None  # Reset test selection
+            st.rerun()
+    
+    # Step 2: Test Selection (only shown after category is selected)
+    if st.session_state['selected_category']:
         st.markdown("---")
+        st.subheader(f"{analysis_catalog[st.session_state['selected_category']]['icon']} {st.session_state['selected_category']}")
+        st.markdown("**Select a test:**")
         
-        # Main category selection
-        analysis_category = st.selectbox(
-            "Select Analysis Category",
-            ["Convert to DICOM", "Flat Panel Analysis"],
-            help="Choose the analysis type or utility tool"
-        )
-
-        if analysis_category == "Convert to DICOM":
-            st.subheader("🏥 Convert Image to DICOM Format")
-            st.markdown("""
-            Convert your raw or standard image file to DICOM format with customizable metadata.
-            Upload an image file in the sidebar first.
-            """)
+        tests = analysis_catalog[st.session_state['selected_category']]['tests']
+        
+        # Create test selection buttons in a grid
+        num_tests = len(tests)
+        cols_per_row = 3 if num_tests > 3 else num_tests
+        
+        test_names = list(tests.keys())
+        for i in range(0, len(test_names), cols_per_row):
+            cols = st.columns(cols_per_row)
+            for j, col in enumerate(cols):
+                if i + j < len(test_names):
+                    test_name = test_names[i + j]
+                    test_info = tests[test_name]
+                    with col:
+                        if st.button(
+                            f"{test_info['icon']} **{test_name}**", 
+                            use_container_width=True,
+                            type="primary" if st.session_state['selected_test'] == test_name else "secondary"
+                        ):
+                            st.session_state['selected_test'] = test_name
+                            st.rerun()
+        
+        # Step 3: Show Requirements and Upload Section (only after test is selected)
+        if st.session_state['selected_test']:
+            selected_test_info = tests[st.session_state['selected_test']]
             
-            if st.button("Generate DICOM file", key="dicomize_button", type="primary", use_container_width=True):
+            st.markdown("---")
+            st.subheader(f"{selected_test_info['icon']} {st.session_state['selected_test']}")
+            st.markdown(f"*{selected_test_info['description']}*")
+            
+            # Requirements Card
+            requirements_list = '\n'.join([f"- {req}" for req in selected_test_info['requirements']])
+            st.info(f"""**📋 Requirements:**
+- **Files needed:** {selected_test_info['files_needed']}
+- **File types:** {selected_test_info['file_types']}
+
+**Details:**
+
+{requirements_list}
+""")
+            
+            # Now show the upload section
+            st.markdown("---")
+            st.markdown("### 📤 Upload Files")
+            
+            # Dynamic file uploader based on selected test
+            uploaded_files = st.file_uploader(
+                f"Upload files for {st.session_state['selected_test']}",
+                type=None,
+                accept_multiple_files=True,
+                help=f"Upload: {selected_test_info['file_types']}",
+                key=f"uploader_{st.session_state['selected_test']}"
+            )
+            
+            # Process files if uploaded
+            if uploaded_files:
+                process_analysis_workflow(
+                    uploaded_files, 
+                    st.session_state['selected_category'],
+                    st.session_state['selected_test'],
+                    analysis_catalog
+                )
+            else:
+                st.warning("⬆️ Please upload the required files to continue")
+    
+    else:
+        # No category selected yet - show welcome message
+        st.info("👆 Select a category above to begin")
+
+    # --- Add a clear session state button for debugging ---
+    st.sidebar.markdown("---")
+    if st.sidebar.button("Clear All Saved Analysis Data"):
+        st.session_state['detector_conversion'] = None
+        # Also clear structured detector results if present
+        st.session_state['detector_conv'] = None
+        # Clear MTF and NPS caches
+        if 'mtf_cache' in st.session_state:
+            del st.session_state['mtf_cache']
+        if 'nps_cache' in st.session_state:
+            del st.session_state['nps_cache']
+        st.success("All saved analysis data cleared!")
+        st.rerun() # Rerun to reflect the cleared state
+
+
+def process_analysis_workflow(uploaded_files, category, test_name, analysis_catalog):
+    """
+    Process the uploaded files and route to appropriate analysis function.
+    This replaces the old monolithic file processing logic.
+    """
+    
+    # Determine file types by content and extension
+    file_types = []
+    for f in uploaded_files:
+        file_bytes = f.getvalue()
+        detected_type = detect_file_type(file_bytes, f.name)
+        file_types.append((f, detected_type))
+    
+    # Categorize files
+    dicom_files = [f for f, ftype in file_types if ftype == 'dicom']
+    raw_files = [f for f, ftype in file_types if ftype == 'raw']
+    unknown_files = [f for f, ftype in file_types if ftype == 'unknown']
+    
+    # Show file detection info in expander
+    with st.expander("📁 Uploaded Files", expanded=True):
+        for f, ftype in file_types:
+            if ftype == 'dicom':
+                st.success(f"🏥 {f.name} → DICOM (FOR PRESENTATION)")
+            elif ftype == 'raw':
+                ext = os.path.splitext(f.name)[1].lower()
+                if ext in ['.dcm', '.dicom']:
+                    st.info(f"📷 {f.name} → RAW (FOR PROCESSING)")
+                elif ext:
+                    st.info(f"📷 {f.name} → RAW/STD")
+                else:
+                    st.info(f"📷 {f.name} → RAW (extensionless)")
+            else:
+                st.warning(f"❓ {f.name} → Unknown format")
+    
+    # Show warning for unknown files
+    if unknown_files:
+        st.error(f"⚠️ Unknown file types detected: {[f.name for f in unknown_files]}")
+        return
+    
+    # Route to appropriate analysis based on test type
+    if test_name == "RAW vs DICOM Comparison":
+        # Special case: comparison tool handles mixed files
+        st.markdown("---")
+        display_comparison_tool_section(uploaded_files)
+        return
+    
+    elif test_name == "Convert to DICOM":
+        # DICOM conversion: needs 1 file (RAW or image)
+        if len(uploaded_files) != 1:
+            st.warning(f"⚠️ Please upload exactly 1 file for DICOM conversion (currently {len(uploaded_files)} uploaded)")
+            return
+        
+        # Load the image first
+        image_array, pixel_spacing_row, pixel_spacing_col, dicom_filename = load_single_image(
+            uploaded_files[0], file_types[0][1]
+        )
+        
+        if image_array is not None:
+            st.markdown("---")
+            st.subheader("🖼️ Image Preview")
+            st.write(f"**Filename:** {dicom_filename}")
+            st.write(f"**Dimensions:** {image_array.shape[1]} x {image_array.shape[0]} pixels")
+            if pixel_spacing_row and pixel_spacing_col:
+                st.write(f"**Pixel Spacing:** {pixel_spacing_row:.3f} x {pixel_spacing_col:.3f} mm/px")
+            
+            # Show image preview
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                # Normalize for display
+                img_display = (image_array - image_array.min()) / (image_array.max() - image_array.min())
+                st.image(img_display, caption="Image Preview", use_container_width=True)
+            
+            st.markdown("---")
+            st.subheader("🏥 Generate DICOM File")
+            
+            if st.button("Generate DICOM", key="dicomize_button", type="primary", use_container_width=True):
                 try:
-                    # Call the dicomizer function
                     dicom_bytes, new_filename = generate_dicom_from_raw(
                         image_array,
                         original_filename=dicom_filename if dicom_filename else "converted_image.dcm",
@@ -387,73 +403,245 @@ def main_app_ui():
                     st.error(f"❌ DICOM generation failed: {e}")
                     import traceback
                     st.code(traceback.format_exc())
+        return
+    
+    elif test_name == "Detector Response Curve":
+        # Detector conversion: needs multiple RAW files
+        if len(raw_files) < 3:
+            st.warning(f"⚠️ Detector Response Curve requires at least 3 RAW files (currently {len(raw_files)} uploaded)")
+            return
         
-        elif analysis_category == "Flat Panel Analysis":
-            # Sub-category tabs for flat panel analyses
-            tab_detector, tab_uniformity, tab_nps, tab_mtf, tab_dqe, tab_contrast = st.tabs([
-                "Detector Conversion", "Uniformity", "NPS", "MTF", "DQE", "Contrast"
-            ])
+        st.markdown("---")
+        detector_results = display_detector_conversion_section(uploaded_files=raw_files)
+        if detector_results is not None:
+            st.session_state['detector_conversion'] = detector_results
+        return
+    
+    # For all other tests: validate file type consistency
+    is_dicom_upload = len(dicom_files) > 0
+    is_raw_upload = len(raw_files) > 0
+    
+    if is_dicom_upload and is_raw_upload:
+        st.error("⚠️ Mixed file types detected! Please upload only one type (either all RAW or all DICOM) for this analysis.")
+        return
+    
+    # Load the primary image for single-image analyses
+    if not uploaded_files:
+        return
+    
+    # Load first image
+    primary_file = uploaded_files[0]
+    primary_file_type = file_types[0][1]
+    
+    image_array, pixel_spacing_row, pixel_spacing_col, dicom_filename = load_single_image(
+        primary_file, primary_file_type
+    )
+    
+    if image_array is None:
+        st.error("❌ Failed to load image. Please check the file format and parameters.")
+        return
+    
+    # Image preview in expander
+    with st.expander("🖼️ Image Preview", expanded=False):
+        st.write(f"**Filename:** {dicom_filename}")
+        st.write(f"**Dimensions:** {image_array.shape[1]} x {image_array.shape[0]} pixels")
+        if pixel_spacing_row and pixel_spacing_col:
+            st.write(f"**Pixel Spacing:** {pixel_spacing_row:.3f} x {pixel_spacing_col:.3f} mm/px")
+        
+        # Normalize for display
+        img_display = (image_array - image_array.min()) / (image_array.max() - image_array.min())
+        st.image(img_display, caption=f"Preview: {dicom_filename}", use_container_width=True)
+     
+    # Route to specific analysis
+    st.markdown("---")
+    
+    if test_name == "Uniformity Analysis":
+        display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
+    
+    elif test_name == "MTF (Sharpness)":
+        # Pass uploaded files to enable MTF comparison mode when 2 images are uploaded
+        raw_params_for_mtf = None
+        if is_raw_upload and len(raw_files) >= 2:
+            raw_params_for_mtf = {
+                'dtype': image_array.dtype,
+                'height': image_array.shape[0],
+                'width': image_array.shape[1]
+            }
+        display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, 
+                                    uploaded_files=uploaded_files, raw_params=raw_params_for_mtf)
+    
+    elif test_name == "NPS (Noise)":
+        display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, uploaded_files=uploaded_files)
+    
+    elif test_name == "Threshold Contrast":
+        display_threshold_contrast_section(image_array, pixel_spacing_row, pixel_spacing_col)
+    
+    elif test_name == "DQE (Detective Quantum Efficiency)":
+        display_dqe_analysis_section()
 
-            with tab_detector:
-                # Prefer the sidebar-uploaded RAW/STD files if available; pass them to the detector UI so re-upload is not needed
-                raw_sidebar_files = None
-                if uploaded_files:
-                    # Use the detected raw files from content analysis
-                    raw_sidebar_files = raw_files or None
 
-                detector_results = display_detector_conversion_section(uploaded_files=raw_sidebar_files)
-                # If the detector module returned structured output, persist it to session state
-                if detector_results is not None:
-                    st.session_state['detector_conv'] = detector_results
-
-            with tab_uniformity:
-                display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
-
-            with tab_nps:
-                # Pass all files uploaded in the sidebar into NPS so it can use them all
-                display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, uploaded_files=uploaded_files)
-
-            with tab_mtf:
-                # Pass uploaded files to enable MTF comparison mode when 2 images are uploaded
-                # For RAW files, pass parameters so both can be loaded with same dtype/dimensions
-                raw_params_for_mtf = None
-                if is_raw_upload and len(raw_files) >= 2:
-                    # Extract RAW params from the loaded first image
-                    raw_params_for_mtf = {
-                        'dtype': image_array.dtype,
-                        'height': image_array.shape[0],
-                        'width': image_array.shape[1]
-                    }
-                display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, 
-                                            uploaded_files=uploaded_files, raw_params=raw_params_for_mtf)
-
-            with tab_contrast:
-                display_threshold_contrast_section(image_array, pixel_spacing_row, pixel_spacing_col)
-
-            with tab_dqe:
-                display_dqe_analysis_section()
-
-    elif uploaded_files: # This handles the comparison case where image_array is not pre-loaded
-        # If files are uploaded but no single image array was created, it's the comparison tool case.
-        st.header("Developer: Compare RAW vs DICOM")
-        display_comparison_tool_section(uploaded_files)
-
-    elif not uploaded_files:
-        st.info("Please upload RAW files in the sidebar to analyze detector response curve.")
-
-    # --- Add a clear session state button for debugging ---
-    st.sidebar.markdown("---")
-    if st.sidebar.button("Clear All Saved Analysis Data"):
-        st.session_state['detector_conversion'] = None
-        # Also clear structured detector results if present
-        st.session_state['detector_conv'] = None
-        # Clear MTF and NPS caches
-        if 'mtf_cache' in st.session_state:
-            del st.session_state['mtf_cache']
-        if 'nps_cache' in st.session_state:
-            del st.session_state['nps_cache']
-        st.success("All saved analysis data cleared!")
-        st.rerun() # Rerun to reflect the cleared state
+def load_single_image(uploaded_file, file_type):
+    """
+    Load a single image file (DICOM or RAW) and return the image array and metadata.
+    Returns: (image_array, pixel_spacing_row, pixel_spacing_col, filename)
+    """
+    
+    image_array = None
+    pixel_spacing_row = None
+    pixel_spacing_col = None
+    filename = uploaded_file.name
+    
+    file_bytes = uploaded_file.getvalue()
+    
+    if file_type == 'dicom':
+        # Load as DICOM
+        try:
+            ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True)
+            # Extract pixel spacing if available
+            ps = getattr(ds, 'PixelSpacing', None)
+            if ps and len(ps) >= 2:
+                pixel_spacing_row = float(ps[0])
+                pixel_spacing_col = float(ps[1])
+            # Pixel data
+            image_array = ds.pixel_array
+            st.success(f"✅ Loaded DICOM file: {filename}")
+        except Exception as e:
+            st.error(f"❌ Failed to load DICOM: {e}")
+            return None, None, None, None
+    
+    elif file_type == 'raw':
+        # First check if it might actually be a DICOM
+        dicom_suspected = False
+        try:
+            if len(file_bytes) >= 132 and file_bytes[128:132] == b'DICM':
+                dicom_suspected = True
+            else:
+                ds_hdr = pydicom.dcmread(io.BytesIO(file_bytes), force=True, stop_before_pixels=True)
+                if hasattr(ds_hdr, 'Rows') and hasattr(ds_hdr, 'Columns'):
+                    dicom_suspected = True
+        except Exception:
+            pass
+        
+        # Let user choose interpretation
+        interpret_options = ["RAW/STD", "DICOM"]
+        default_index = 1 if dicom_suspected else 0
+        
+        with st.sidebar:
+            st.markdown("### 🔧 RAW File Parameters")
+            interpret_choice = st.radio(
+                "Interpret file as:",
+                options=interpret_options,
+                index=default_index,
+                help="If your file is actually a DICOM saved with .raw/.std extension, choose DICOM",
+                key=f"interpret_{filename}"
+            )
+            
+            if dicom_suspected:
+                st.caption("💡 DICOM-like header detected")
+        
+        if interpret_choice == "DICOM":
+            # Try to parse as DICOM
+            try:
+                ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True)
+                ps = getattr(ds, 'PixelSpacing', None)
+                if ps and len(ps) >= 2:
+                    pixel_spacing_row = float(ps[0])
+                    pixel_spacing_col = float(ps[1])
+                image_array = ds.pixel_array
+                st.success("✅ Parsed as DICOM (forced)")
+            except Exception as e:
+                st.error(f"❌ Failed to parse as DICOM: {e}")
+                return None, None, None, None
+        else:
+            # RAW interpretation
+            with st.sidebar:
+                dtype_map = {
+                    '16-bit Unsigned Integer': np.uint16,
+                    '8-bit Unsigned Integer': np.uint8,
+                    '32-bit Float': np.float32
+                }
+                dtype_str = st.selectbox(
+                    "Pixel Data Type",
+                    options=list(dtype_map.keys()),
+                    index=0,
+                    key=f"dtype_{filename}"
+                )
+                np_dtype = dtype_map[dtype_str]
+                
+                itemsize = np.dtype(np_dtype).itemsize
+                file_size = len(file_bytes)
+                
+                if file_size % itemsize != 0:
+                    st.error(f"File size ({file_size} bytes) is not a multiple of pixel size ({itemsize} bytes)")
+                    return None, None, None, None
+                
+                total_pixels = file_size // itemsize
+                
+                # Get possible dimensions
+                def get_factors(n):
+                    factors = set()
+                    for i in range(1, int(np.sqrt(n)) + 1):
+                        if n % i == 0:
+                            factors.add((i, n // i))
+                            factors.add((n // i, i))
+                    return sorted(list(factors))
+                
+                possible_dims = get_factors(total_pixels)
+                
+                if not possible_dims:
+                    st.error(f"Could not determine valid dimensions for {total_pixels} pixels")
+                    return None, None, None, None
+                
+                # Filter to reasonable aspect ratios
+                reasonable_dims = []
+                for h, w in possible_dims:
+                    aspect_ratio = w / h
+                    if 1/3 <= aspect_ratio <= 3:
+                        reasonable_dims.append((h, w))
+                
+                if not reasonable_dims:
+                    reasonable_dims = possible_dims
+                    st.warning("Showing all dimensions (no square-like options found)")
+                
+                default_dim_index = len(reasonable_dims) // 2
+                dim_options = [f"{w} x {h}" for h, w in reasonable_dims]
+                
+                selected_dim = st.selectbox(
+                    "Image Dimensions (Width x Height)",
+                    options=dim_options,
+                    index=default_dim_index,
+                    key=f"dims_{filename}"
+                )
+                
+                width, height = map(int, selected_dim.split(" x "))
+                st.caption(f"Selected: **{width} x {height}** pixels ({width * height:,} total)")
+                
+                pixel_spacing_row = st.number_input(
+                    "Pixel Spacing Row (mm/px)",
+                    min_value=0.001,
+                    value=0.1,
+                    step=0.01,
+                    format="%.3f",
+                    key=f"ps_row_{filename}"
+                )
+                pixel_spacing_col = st.number_input(
+                    "Pixel Spacing Col (mm/px)",
+                    min_value=0.001,
+                    value=0.1,
+                    step=0.01,
+                    format="%.3f",
+                    key=f"ps_col_{filename}"
+                )
+            
+            # Load the RAW data
+            try:
+                image_array = np.frombuffer(file_bytes, dtype=np_dtype).reshape((height, width))
+                st.success("✅ RAW file loaded successfully")
+            except Exception as e:
+                st.error(f"❌ Failed to load RAW: {e}")
+                return None, None, None, None
+    
+    return image_array, pixel_spacing_row, pixel_spacing_col, filename
 
 
 if __name__ == "__main__":

@@ -307,6 +307,51 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     if not (pixel_spacing_row and pixel_spacing_col and pixel_spacing_row > 0):
         st.warning("Pixel spacing unavailable; using default 0.1 mm/pixel.")
 
+    # Show ROI Preview for all images
+    with st.expander("🔍 Edge ROI Selection Preview", expanded=False):
+        st.caption("Preview of the selected ROI on each image where MTF will be analyzed")
+        
+        # Create columns for each image preview
+        if len(image_arrays) == 1:
+            preview_cols = [st.container()]
+        else:
+            preview_cols = st.columns(len(image_arrays))
+        
+        for idx, (img, fname) in enumerate(zip(image_arrays, filenames)):
+            with preview_cols[idx] if len(image_arrays) > 1 else preview_cols[0]:
+                st.markdown(f"**{fname}**")
+                
+                # Create preview with ROI overlay
+                img_normalized = (img - img.min()) / (img.max() - img.min() + 1e-10)
+                
+                # Create RGB image for overlay
+                img_rgb = np.stack([img_normalized] * 3, axis=-1)
+                
+                # Draw ROI rectangle (red semi-transparent overlay)
+                img_with_roi = img_rgb.copy()
+                
+                # Draw rectangle borders (thicker)
+                border_thickness = max(2, min(h, w) // 200)
+                
+                # Top and bottom borders
+                img_with_roi[max(0, y0-border_thickness):y0, x0:x1, 0] = 1.0  # Red
+                img_with_roi[max(0, y0-border_thickness):y0, x0:x1, 1:] = 0.0
+                img_with_roi[y1:min(h, y1+border_thickness), x0:x1, 0] = 1.0
+                img_with_roi[y1:min(h, y1+border_thickness), x0:x1, 1:] = 0.0
+                
+                # Left and right borders
+                img_with_roi[y0:y1, max(0, x0-border_thickness):x0, 0] = 1.0
+                img_with_roi[y0:y1, max(0, x0-border_thickness):x0, 1:] = 0.0
+                img_with_roi[y0:y1, x1:min(w, x1+border_thickness), 0] = 1.0
+                img_with_roi[y0:y1, x1:min(w, x1+border_thickness), 1:] = 0.0
+                
+                # Add semi-transparent red tint inside ROI
+                alpha = 0.3
+                img_with_roi[y0:y1, x0:x1, 0] = img_with_roi[y0:y1, x0:x1, 0] * (1 - alpha) + alpha
+                
+                st.image(img_with_roi, caption=f"ROI: {width_px}×{height_px} px", use_container_width=True)
+                st.caption(f"Position: ({x0}, {y0}) to ({x1}, {y1})")
+
     # Calculate MTF
     st.markdown("---")
     if not st.button("Calculate MTF", key="mtf_calculate_button"):

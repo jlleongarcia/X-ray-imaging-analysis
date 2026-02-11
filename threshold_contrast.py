@@ -159,13 +159,13 @@ def calculate_ctsm(rois: List[np.ndarray]) -> Tuple[float, float, int]:
     Returns:
     --------
     Tuple[float, float, int]
-        - C_TSM: Threshold contrast at 95% confidence level
+        - C_T: Threshold contrast at 95% confidence level
         - sigma_chi: Standard deviation of ROI means
         - n_rois: Number of ROIs used
         
     Formula:
     --------
-    C_TSM(d) = 3.29 × σχ(d)
+    C_T(d) = 3.29 × σχ(d)
     
     where σχ is the standard deviation of the mean pixel values
     from n ROIs of size d×d pixels.
@@ -182,9 +182,9 @@ def calculate_ctsm(rois: List[np.ndarray]) -> Tuple[float, float, int]:
     
     # Calculate threshold contrast at 95% confidence level
     # Factor 3.29 corresponds to ~95% confidence in normal distribution
-    c_tsm = 3.29 * sigma_chi
+    c_t = 3.29 * sigma_chi
     
-    return c_tsm, sigma_chi, len(rois)
+    return c_t, sigma_chi, len(rois)
 
 
 def extract_normalization_roi(
@@ -221,7 +221,7 @@ def extract_normalization_roi(
 
 def contrast_threshold_model(d: np.ndarray, a: float, b: float, c: float) -> np.ndarray:
     """
-    Contrast threshold model: C_th(d) = c/d² + b/d + a
+    Contrast threshold model: C_T(d) = c/d² + b/d + a
     
     Parameters:
     -----------
@@ -240,23 +240,23 @@ def contrast_threshold_model(d: np.ndarray, a: float, b: float, c: float) -> np.
 
 def fit_contrast_threshold_curve(
     diameters: np.ndarray,
-    c_tsm_values: np.ndarray
+    c_t_values: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
     """
-    Fit the contrast threshold curve: C_th(d) = c/d² + b/d + a
+    Fit the contrast threshold curve: C_T(d) = c/d² + b/d + a
     
     Parameters:
     -----------
     diameters : np.ndarray
         Detail diameters in mm
-    c_tsm_values : np.ndarray
+    c_t_values : np.ndarray
         Threshold contrast values (normalized, in %)
         
     Returns:
     --------
     Tuple containing:
         - fitted_params: [a, b, c] parameters
-        - fitted_curve: C_th values for smooth plotting
+        - fitted_curve: C_T values for smooth plotting
         - fit_quality: dict with R² and RMSE
     """
     try:
@@ -267,7 +267,7 @@ def fit_contrast_threshold_curve(
         popt, pcov = curve_fit(
             contrast_threshold_model,
             diameters,
-            c_tsm_values,
+            c_t_values,
             p0=p0,
             maxfev=10000
         )
@@ -280,10 +280,10 @@ def fit_contrast_threshold_curve(
         
         # Calculate R² and RMSE
         y_pred = contrast_threshold_model(diameters, a, b, c)
-        ss_res = np.sum((c_tsm_values - y_pred)**2)
-        ss_tot = np.sum((c_tsm_values - np.mean(c_tsm_values))**2)
+        ss_res = np.sum((c_t_values - y_pred)**2)
+        ss_tot = np.sum((c_t_values - np.mean(c_t_values))**2)
         r_squared = 1 - (ss_res / ss_tot)
-        rmse = np.sqrt(np.mean((c_tsm_values - y_pred)**2))
+        rmse = np.sqrt(np.mean((c_t_values - y_pred)**2))
         
         fit_quality = {
             'r_squared': r_squared,
@@ -329,7 +329,7 @@ def generate_contrast_detail_curve(
     --------
     Tuple[pd.DataFrame, float]
         - DataFrame with columns: subroi_size_pixels, n_subrois, diameter_mm,
-          c_tsm, c_tsm_normalized, sigma_chi, sigma_chi_normalized
+          c_t, c_t_normalized, sigma_chi, sigma_chi_normalized
         - normalization_value: mean pixel value of 120×120 central ROI
     """
     # Extract central 1024×1024 ROI
@@ -353,11 +353,11 @@ def generate_contrast_detail_curve(
             st.warning(f"Could not extract {num_subrois} subROIs of size {subroi_size}×{subroi_size}. Only {len(subrois)} extracted. Skipping.")
             continue
         
-        # Calculate C_TSM
-        c_tsm, sigma_chi, n_subrois_used = calculate_ctsm(subrois)
+        # Calculate C_T
+        c_t, sigma_chi, n_subrois_used = calculate_ctsm(subrois)
         
         # Normalize by mean pixel value (convert to percentage)
-        c_tsm_normalized = (c_tsm / normalization_value) * 100
+        c_t_normalized = (c_t / normalization_value) * 100
         sigma_chi_normalized = (sigma_chi / normalization_value) * 100
         
         # Calculate diameter in mm
@@ -367,8 +367,8 @@ def generate_contrast_detail_curve(
             'subroi_size_pixels': subroi_size,
             'n_subrois': n_subrois_used,
             'diameter_mm': diameter_mm,
-            'c_tsm': c_tsm,
-            'c_tsm_normalized': c_tsm_normalized,
+            'c_t': c_t,
+            'c_t_normalized': c_t_normalized,
             'sigma_chi': sigma_chi,
             'sigma_chi_normalized': sigma_chi_normalized
         })
@@ -405,14 +405,14 @@ def plot_contrast_detail_curve(
     fig, ax = plt.subplots(figsize=(12, 7))
     
     # Plot measured data points
-    ax.plot(df['diameter_mm'], df['c_tsm_normalized'], 'bo', markersize=10, 
-            label='Measured C_TSM', zorder=3)
+    ax.plot(df['diameter_mm'], df['c_t_normalized'], 'bo', markersize=10, 
+            label='Measured $C_T$', zorder=3)
     
     # Plot fitted curve if available
     if fit_params is not None and fit_quality is not None:
         a, b, c = fit_params
         ax.plot(fit_quality['d_smooth'], fit_quality['fitted_curve'], 'r-', 
-                linewidth=2.5, label=f'Fitted: C_th(d) = {c:.4f}/d² + {b:.4f}/d + {a:.4f}',
+                linewidth=2.5, label=rf'Fitted: $C_T(d) = {c:.4f}/d^2 + {b:.4f}/d + {a:.4f}$',
                 zorder=2)
         
         # Add fit quality text
@@ -423,7 +423,7 @@ def plot_contrast_detail_curve(
     
     # Formatting
     ax.set_xlabel('Detail Diameter d (mm)', fontsize=13, fontweight='bold')
-    ax.set_ylabel('Threshold Contrast C_TSM (%)', fontsize=13, fontweight='bold')
+    ax.set_ylabel('Threshold Contrast $C_T$ (%)', fontsize=13, fontweight='bold')
     ax.set_title('Contrast-Detail Detectability Curve\n(Statistical Method - Normalized to 120×120 Central ROI)', 
                  fontsize=14, fontweight='bold')
     ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.8)
@@ -575,13 +575,13 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
         st.markdown("""
         **Method Overview:**
         
-        This implementation follows the statistical method (SM) for low-contrast detectability assessment:
+        This implementation follows the statistical method for low-contrast detectability assessment:
         
         1. **Extract Central ROI**: 1024×1024 pixel region from image center
         2. **For each subROI size**: Extract fixed number of subROIs (e.g., 49 subROIs of 2×2, then 49 of 3×3, etc.)
-        3. **Calculate C_TSM**: For each size: C_TSM(d) = 3.29 × σχ(d)
+        3. **Calculate $$C_{T}$$**: For each size: $$C_{T}(d) = 3.29 × σ(d)$$
         4. **Normalize**: Convert to percentage using mean of central 120×120 ROI
-        5. **Fit Curve**: C_th(d) = c/d² + b/d + a
+        5. **Fit Curve**: $$C_{T}(d) = \\frac{c}{d^2} + \\frac{b}{d} + a$$
         
         **Key Parameters:**
         - Central ROI: 1024×1024 pixels
@@ -713,7 +713,7 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
             # Calculate button
             st.subheader("2. Calculate Contrast-Detail Curve")
             
-            if st.button("🔬 Calculate C_TSM & Fit Curve", type="primary"):
+            if st.button("🔬 Calculate $$C_{T}(d)$$ & Fit Curve", type="primary"):
                 with st.spinner("Extracting central ROI, calculating threshold contrast, and fitting curve..."):
                     
                     # Display image info for debugging
@@ -729,10 +729,10 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
                         st.error("Could not generate results. Check grid sizes and image dimensions.")
                     else:
                         # Fit the curve
-                        st.info("Fitting contrast threshold model: C_th(d) = c/d² + b/d + a")
+                        st.info("Fitting contrast threshold model: $$C_{T}(d) = \\frac{c}{d^2} + \\frac{b}{d} + a$$")
                         fit_params, fit_quality = fit_contrast_threshold_curve(
                             df_results['diameter_mm'].values,
-                            df_results['c_tsm_normalized'].values
+                            df_results['c_t_normalized'].values
                         )
                         
                         units = "μGy" if is_kerma_image else "PV"
@@ -741,7 +741,7 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
                         
                         if fit_params is not None:
                             a, b, c = fit_params
-                            st.success(f"✓ Curve fitted successfully: C_th(d) = {c:.4f}/d² + {b:.4f}/d + {a:.4f}")
+                            st.success(f"✓ Curve fitted successfully: $$C_{{T}}(d) = \\frac{{{c:.4f}}}{{d^2}} + \\frac{{{b:.4f}}}{{d}} + {a:.4f}$$")
                             st.metric("R² (goodness of fit)", f"{fit_quality['r_squared']:.4f}")
                         
                         # Display normalization info
@@ -755,32 +755,30 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
                         # Format table for display
                         display_df = df_results.copy()
                         display_df['diameter_mm'] = display_df['diameter_mm'].round(3)
-                        display_df['c_tsm_normalized'] = display_df['c_tsm_normalized'].round(4)
+                        display_df['c_t'] = display_df['c_t'].round(2)
+                        display_df['c_t_normalized'] = display_df['c_t_normalized'].round(4)
+                        display_df['sigma_chi'] = display_df['sigma_chi'].round(2)
                         display_df['sigma_chi_normalized'] = display_df['sigma_chi_normalized'].round(4)
                         
-                        st.dataframe(
-                            display_df,
-                            column_config={
-                                "subroi_size_pixels": "SubROI Size (px)",
-                                "n_subrois": "# SubROIs",
-                                "diameter_mm": "Diameter d (mm)",
-                                "c_tsm": f"C_TSM ({units})",
-                                "c_tsm_normalized": "C_TSM (%)",
-                                "sigma_chi": f"σχ ({units})",
-                                "sigma_chi_normalized": "σχ (%)"
-                            },
-                            hide_index=True,
-                            use_container_width=True
-                        )
+                        # Create markdown table with LaTeX headers
+                        markdown_table = f"""
+| **SubROI Size (px)** | **# SubROIs** | **Diameter $d$ (mm)** | **$C_{{T}}$ ({units})** | **$C_{{T}}$ (%)** | **$\\sigma$ ({units})** | **$\\sigma$ (%)** |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+"""
+                        
+                        for _, row in display_df.iterrows():
+                            markdown_table += f"| {row['subroi_size_pixels']} | {row['n_subrois']} | {row['diameter_mm']:.3f} | {row['c_t']:.2f} | {row['c_t_normalized']:.4f} | {row['sigma_chi']:.2f} | {row['sigma_chi_normalized']:.4f} |\n"
+                        
+                        st.markdown(markdown_table)
                         
                         # Add fitted values to download
                         if fit_params is not None:
                             a, b, c = fit_params
                             df_export = df_results.copy()
-                            df_export['c_th_fitted'] = contrast_threshold_model(
+                            df_export['c_t_fitted'] = contrast_threshold_model(
                                 df_export['diameter_mm'].values, a, b, c
                             )
-                            df_export['residual'] = df_export['c_tsm_normalized'] - df_export['c_th_fitted']
+                            df_export['residual'] = df_export['c_t_normalized'] - df_export['c_t_fitted']
                         else:
                             df_export = df_results.copy()
                         
@@ -839,16 +837,16 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
                 with col_b:
                     st.metric("Largest Detail", f"{df_results['diameter_mm'].max():.3f} mm")
                 with col_c:
-                    st.metric("Min C_TSM", f"{df_results['c_tsm_normalized'].min():.4f} %")
+                    st.metric("Min $C_T$", f"{df_results['c_t_normalized'].min():.4f} %")
                 with col_d:
-                    st.metric("Max C_TSM", f"{df_results['c_tsm_normalized'].max():.4f} %")
+                    st.metric("Max $C_T$", f"{df_results['c_t_normalized'].max():.4f} %")
                 
                 # Interpretation
                 st.info("""
                 **Interpretation:**
                 
-                - **C_TSM (%)**: Threshold contrast normalized to mean pixel value (lower = better detectability)
-                - **Fitted curve**: C_th(d) = c/d² + b/d + a describes contrast-detail relationship
+                - **$C_T$ (%)**: Threshold contrast normalized to mean pixel value (lower = better detectability)
+                - **Fitted curve**: $C_{T}(d) = \\frac{c}{d^2} + \\frac{b}{d} + a$ describes contrast-detail relationship
                 - **Larger detail sizes** typically have lower threshold contrast (easier to detect)
                 - **R²**: Goodness of fit (closer to 1 = better fit)
                 - Values represent minimum contrast difference at 95% confidence level
@@ -884,30 +882,30 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
             
             4. **Preview** (optional): Check ROI sampling pattern for a specific size
             
-            5. **Analyze**: Click "Calculate C_TSM & Fit Curve"
+            5. **Analyze**: Click "Calculate C_T & Fit Curve"
             
             6. **Review Results**:
-                - Examine fitted curve: C_th(d) = c/d² + b/d + a
+                - Examine fitted curve: $$C_{T}(d) = c/d² + b/d + a$$
                 - Check R² value for fit quality
-                - Review normalized C_TSM values (in %)
+                - Review normalized C_T values (in %)
                 - Compare with baseline or reference values
                 - Download results (CSV) and plot (PNG)
             
             **Key Concepts:**
             - **Central 1024×1024 ROI**: Main analysis region from image center
-            - **120×120 Normalization ROI**: Used to convert C_TSM to percentage
+            - **120×120 Normalization ROI**: Used to convert C_T to percentage
             - **Fixed subROI count**: Same number extracted for each size (e.g., 49)
             - **Multiple sizes tested**: 2, 3, 4, 5, 6, 7, 8, 12, 16, 32, 64, 128 pixels
             - **Overlapping allowed**: SubROIs may overlap to achieve desired count
             - **Detail diameter d**: Physical size of subROI in mm
-            - **C_th(d)**: Threshold contrast as function of detail size
+            - **C_{T}(d)**: Threshold contrast as function of detail size
             
             **Tips:**
             - Use uniform phantom (same as uniformity analysis)
             - Ensure central region is artifact-free
             - Default 49 subROIs (7×7 pattern) is recommended
             - Minimum 25 subROIs required for statistical reliability
-            - Smaller subROI sizes → smaller detail diameters → higher C_TSM values
+            - Smaller subROI sizes → smaller detail diameters → higher C_{T} values
             - Good fit (R² > 0.95) validates the model
             """)
 

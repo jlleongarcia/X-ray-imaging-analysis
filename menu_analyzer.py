@@ -507,34 +507,43 @@ def load_single_image(uploaded_file, file_type):
         # Load as DICOM
         try:
             ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True)
-            # Extract pixel spacing if available
-            ps = getattr(ds, 'PixelSpacing', None)
+            
+            # Extract dimensions from DICOM tags (0028,0010) Rows and (0028,0011) Columns
+            rows = getattr(ds, 'Rows', None)
+            cols = getattr(ds, 'Columns', None)
+            
+            # Extract pixel spacing - prefer ImagerPixelSpacing (0018,1164) for detector data
+            # Fallback to PixelSpacing (0028,0030) if ImagerPixelSpacing not available
+            ps = getattr(ds, 'ImagerPixelSpacing', None)
+            if ps is None:
+                ps = getattr(ds, 'PixelSpacing', None)
+            
             if ps and len(ps) >= 2:
                 pixel_spacing_row = float(ps[0])
                 pixel_spacing_col = float(ps[1])
-            # Pixel data
+            
+            # Load pixel data - pydicom uses Rows/Columns internally
             image_array = ds.pixel_array
+            
+            # Verify dimensions match
+            if rows and cols:
+                if image_array.shape != (rows, cols):
+                    st.warning(f"⚠️ Dimension mismatch: Tags say {cols}×{rows}, array is {image_array.shape[1]}×{image_array.shape[0]}")
+            
             st.success(f"✅ Loaded DICOM file: {filename}")
         except Exception as e:
             st.error(f"❌ Failed to load DICOM: {e}")
             return None, None, None, None
     
     elif file_type == 'raw':
-        # First check if it might actually be a DICOM
-        dicom_suspected = False
-        try:
-            if len(file_bytes) >= 132 and file_bytes[128:132] == b'DICM':
-                dicom_suspected = True
-            else:
-                ds_hdr = pydicom.dcmread(io.BytesIO(file_bytes), force=True, stop_before_pixels=True)
-                if hasattr(ds_hdr, 'Rows') and hasattr(ds_hdr, 'Columns'):
-                    dicom_suspected = True
-        except Exception:
-            pass
+        # The file has been classified as RAW by detect_file_type()
+        # This classification already checked PresentationIntentType (0008,0068)
+        # to distinguish between "FOR PROCESSING" (RAW) and "FOR PRESENTATION" (DICOM)
+        # So we trust that decision and default to RAW interpretation.
         
-        # Let user choose interpretation
+        # Still allow user to override if needed (e.g., if detection was wrong)
         interpret_options = ["RAW/STD", "DICOM"]
-        default_index = 1 if dicom_suspected else 0
+        default_index = 0  # Default to RAW since that's what detect_file_type determined
         
         with st.sidebar:
             st.markdown("### 🔧 RAW File Parameters")
@@ -542,29 +551,77 @@ def load_single_image(uploaded_file, file_type):
                 "Interpret file as:",
                 options=interpret_options,
                 index=default_index,
-                help="If your file is actually a DICOM saved with .raw/.std extension, choose DICOM",
+                help="File classified as RAW based on DICOM tag (0008,0068). Override if needed.",
                 key=f"interpret_{filename}"
             )
-            
-            if dicom_suspected:
-                st.caption("💡 DICOM-like header detected")
         
         if interpret_choice == "DICOM":
             # Try to parse as DICOM
             try:
                 ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True)
-                ps = getattr(ds, 'PixelSpacing', None)
+                
+                # Extract dimensions from DICOM tags (0028,0010) Rows and (0028,0011) Columns
+                rows = getattr(ds, 'Rows', None)
+                cols = getattr(ds, 'Columns', None)
+                
+                # Extract pixel spacing - prefer ImagerPixelSpacing (0018,1164) for detector data
+                # Fallback to PixelSpacing (0028,0030) if ImagerPixelSpacing not available
+                ps = getattr(ds, 'ImagerPixelSpacing', None)
+                if ps is None:
+                    ps = getattr(ds, 'PixelSpacing', None)
+                
                 if ps and len(ps) >= 2:
                     pixel_spacing_row = float(ps[0])
                     pixel_spacing_col = float(ps[1])
+                
+                # Load pixel data - pydicom uses Rows/Columns internally
                 image_array = ds.pixel_array
+                
+                # Verify dimensions match
+                if rows and cols:
+                    if image_array.shape != (rows, cols):
+                        st.warning(f"⚠️ Dimension mismatch: Tags say {cols}×{rows}, array is {image_array.shape[1]}×{image_array.shape[0]}")
+                
                 st.success("✅ Parsed as DICOM (forced)")
             except Exception as e:
                 st.error(f"❌ Failed to parse as DICOM: {e}")
                 return None, None, None, None
         else:
-            # RAW interpretation
+            # RAW interpretation - but first check if file has DICOM header with metadata
+            dicom_metadata_available = False
+            dicom_rows = None
+            dicom_cols = None
+            dicom_ps_row = None
+            dicom_ps_col = None
+            
+            # Try to extract metadata from DICOM header (if present)
+            try:
+                ds_meta = pydicom.dcmread(io.BytesIO(file_bytes), force=True, stop_before_pixels=True)
+                
+                # Extract dimensions from tags (0028,0010) Rows and (0028,0011) Columns
+                dicom_rows = getattr(ds_meta, 'Rows', None)
+                dicom_cols = getattr(ds_meta, 'Columns', None)
+                
+                # Extract pixel spacing - prefer ImagerPixelSpacing (0018,1164)
+                ps = getattr(ds_meta, 'ImagerPixelSpacing', None)
+                if ps is None:
+                    ps = getattr(ds_meta, 'PixelSpacing', None)
+                
+                if ps and len(ps) >= 2:
+                    dicom_ps_row = float(ps[0])
+                    dicom_ps_col = float(ps[1])
+                
+                # Check if we have useful metadata
+                if dicom_rows and dicom_cols:
+                    dicom_metadata_available = True
+            except Exception:
+                # No DICOM header or failed to read - will use manual entry
+                pass
+            
             with st.sidebar:
+                if dicom_metadata_available:
+                    st.info(f"📋 DICOM metadata found: {dicom_cols}×{dicom_rows} pixels")
+                
                 dtype_map = {
                     '16-bit Unsigned Integer': np.uint16,
                     '8-bit Unsigned Integer': np.uint8,
@@ -587,66 +644,88 @@ def load_single_image(uploaded_file, file_type):
                 
                 total_pixels = file_size // itemsize
                 
-                # Get possible dimensions
-                def get_factors(n):
-                    factors = set()
-                    for i in range(1, int(np.sqrt(n)) + 1):
-                        if n % i == 0:
-                            factors.add((i, n // i))
-                            factors.add((n // i, i))
-                    return sorted(list(factors))
+                # If we have DICOM dimensions, use them as default
+                if dicom_metadata_available:
+                    width = dicom_cols
+                    height = dicom_rows
+                    st.write(f"**Dimensions (from DICOM tags):**")
+                    st.write(f"{width} × {height} pixels")
+                    st.caption(f"Using Rows (0028,0010) and Columns (0028,0011) tags")
+                else:
+                    # Manual dimension selection
+                    # Get possible dimensions
+                    def get_factors(n):
+                        factors = set()
+                        for i in range(1, int(np.sqrt(n)) + 1):
+                            if n % i == 0:
+                                factors.add((i, n // i))
+                                factors.add((n // i, i))
+                        return sorted(list(factors))
+                    
+                    possible_dims = get_factors(total_pixels)
+                    
+                    if not possible_dims:
+                        st.error(f"Could not determine valid dimensions for {total_pixels} pixels")
+                        return None, None, None, None
+                    
+                    # Filter to reasonable aspect ratios
+                    reasonable_dims = []
+                    for h, w in possible_dims:
+                        aspect_ratio = w / h
+                        if 1/3 <= aspect_ratio <= 3:
+                            reasonable_dims.append((h, w))
+                    
+                    if not reasonable_dims:
+                        reasonable_dims = possible_dims
+                        st.warning("Showing all dimensions (no square-like options found)")
+                    
+                    default_dim_index = len(reasonable_dims) // 2
+                    dim_options = [f"{w} x {h}" for h, w in reasonable_dims]
+                    
+                    selected_dim = st.selectbox(
+                        "Image Dimensions (Width x Height)",
+                        options=dim_options,
+                        index=default_dim_index,
+                        key=f"dims_{filename}"
+                    )
+                    
+                    width, height = map(int, selected_dim.split(" x "))
+                    st.caption(f"Selected: **{width} x {height}** pixels ({width * height:,} total)")
                 
-                possible_dims = get_factors(total_pixels)
-                
-                if not possible_dims:
-                    st.error(f"Could not determine valid dimensions for {total_pixels} pixels")
-                    return None, None, None, None
-                
-                # Filter to reasonable aspect ratios
-                reasonable_dims = []
-                for h, w in possible_dims:
-                    aspect_ratio = w / h
-                    if 1/3 <= aspect_ratio <= 3:
-                        reasonable_dims.append((h, w))
-                
-                if not reasonable_dims:
-                    reasonable_dims = possible_dims
-                    st.warning("Showing all dimensions (no square-like options found)")
-                
-                default_dim_index = len(reasonable_dims) // 2
-                dim_options = [f"{w} x {h}" for h, w in reasonable_dims]
-                
-                selected_dim = st.selectbox(
-                    "Image Dimensions (Width x Height)",
-                    options=dim_options,
-                    index=default_dim_index,
-                    key=f"dims_{filename}"
-                )
-                
-                width, height = map(int, selected_dim.split(" x "))
-                st.caption(f"Selected: **{width} x {height}** pixels ({width * height:,} total)")
+                # Pixel spacing - use DICOM values as defaults if available
+                default_ps_row = dicom_ps_row if dicom_ps_row else 0.1
+                default_ps_col = dicom_ps_col if dicom_ps_col else 0.1
                 
                 pixel_spacing_row = st.number_input(
                     "Pixel Spacing Row (mm/px)",
                     min_value=0.001,
-                    value=0.1,
+                    value=default_ps_row,
                     step=0.01,
                     format="%.3f",
-                    key=f"ps_row_{filename}"
+                    key=f"ps_row_{filename}",
+                    help="From ImagerPixelSpacing (0018,1164)" if dicom_ps_row else None
                 )
                 pixel_spacing_col = st.number_input(
                     "Pixel Spacing Col (mm/px)",
                     min_value=0.001,
-                    value=0.1,
+                    value=default_ps_col,
                     step=0.01,
                     format="%.3f",
-                    key=f"ps_col_{filename}"
+                    key=f"ps_col_{filename}",
+                    help="From ImagerPixelSpacing (0018,1164)" if dicom_ps_col else None
                 )
             
             # Load the RAW data
             try:
-                image_array = np.frombuffer(file_bytes, dtype=np_dtype).reshape((height, width))
-                st.success("✅ RAW file loaded successfully")
+                if dicom_metadata_available:
+                    # File has DICOM header - extract pixel data using pydicom to skip header
+                    ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True)
+                    image_array = ds.pixel_array
+                    st.success("✅ RAW file loaded (pixel data extracted from DICOM structure)")
+                else:
+                    # True RAW file with no header - read all bytes as pixel data
+                    image_array = np.frombuffer(file_bytes, dtype=np_dtype).reshape((height, width))
+                    st.success("✅ RAW file loaded successfully")
             except Exception as e:
                 st.error(f"❌ Failed to load RAW: {e}")
                 return None, None, None, None

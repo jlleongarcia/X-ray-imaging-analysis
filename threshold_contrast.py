@@ -823,10 +823,36 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
                                 st.metric("Parameter b", f"{b:.6f}")
                             with col_p3:
                                 st.metric("Parameter c", f"{c:.6f}")
-                    
-                    st.latex(r"C_{th}(d) = \frac{" + f"{c:.4f}" + r"}{d^2} + \frac{" + f"{b:.4f}" + r"}{d} + " + f"{a:.4f}")
-                    
-                    st.markdown("---")
+                            
+                            st.latex(r"C_{th}(d) = \frac{" + f"{c:.4f}" + r"}{d^2} + \frac{" + f"{b:.4f}" + r"}{d} + " + f"{a:.4f}")
+                            
+                            st.markdown("---")
+                            
+                            # Calculate and display contrast at specific detail sizes
+                            st.subheader("Threshold Contrast at Standard Detail Sizes")
+                            st.caption("Calculated from fitted curve model")
+                            
+                            # Calculate C_T at 0.5 mm and 2 mm using fitted model
+                            c_t_05mm = contrast_threshold_model(np.array([0.5]), a, b, c)[0]
+                            c_t_2mm = contrast_threshold_model(np.array([2.0]), a, b, c)[0]
+                            
+                            col_d1, col_d2 = st.columns(2)
+                            
+                            with col_d1:
+                                st.metric(
+                                    "$$C_T$$ at 0.5 mm", 
+                                    f"{c_t_05mm:.4f} %",
+                                    help="Threshold contrast for 0.5 mm detail diameter (from fitted curve)"
+                                )
+                            
+                            with col_d2:
+                                st.metric(
+                                    "$$C_T$$ at 2.0 mm", 
+                                    f"{c_t_2mm:.4f} %",
+                                    help="Threshold contrast for 2 mm detail diameter (from fitted curve)"
+                                )
+                        
+                        st.markdown("---")
                 
                 # Statistical summary
                 st.subheader("Statistical Summary")

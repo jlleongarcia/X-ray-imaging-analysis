@@ -576,8 +576,18 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     ref_shape = image_array.shape if isinstance(image_array, np.ndarray) and image_array.ndim == 2 else None
     additional_arrays = _load_uploaded_images(uploaded_files, reference_shape=ref_shape, reference_dtype=ref_dtype) if uploaded_files else []
 
-    # Fixed big ROI size: 125 mm square (IEC requirement)
-    BIG_ROI_SIZE_MM = 125.0  # mm
+    # Big ROI size selector in mm (IEC recommends 125 mm; user-adjustable)
+    if 'nps_big_roi_mm' not in st.session_state:
+        st.session_state['nps_big_roi_mm'] = 125.0
+
+    st.select_slider(
+        "Big ROI size (mm)",
+        options=[float(v) for v in range(25, 251, 5)],
+        key='nps_big_roi_mm',
+        on_change=_bump_nps_refresh,
+    )
+
+    BIG_ROI_SIZE_MM = float(st.session_state['nps_big_roi_mm'])
     
     # Calculate big_roi_size in pixels based on pixel spacing
     if pixel_spacing_row is not None and pixel_spacing_col is not None and pixel_spacing_row > 0 and pixel_spacing_col > 0:

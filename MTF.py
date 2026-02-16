@@ -102,15 +102,19 @@ def calculate_mtf_metrics(edge_roi: np.ndarray, pixel_spacing: float) -> dict:
         esf = edge_mtf.esf
         lsf = edge_mtf.lsf
 
-        # Calculate MTF50 and MTF10 using EdgeMTF's built-in method
+        # Calculate MTF50 and MTF10 using first sampled frequency at/under threshold
+        # (robust against interpolation artifacts)
+        freq_arr = np.asarray(frequencies, dtype=float)
+        mtf_arr = np.asarray(mtf_values, dtype=float)
+
         try:
-            mtf50 = edge_mtf.spatial_resolution(50)
-        except Exception:
+            mtf50 = freq_arr[np.where(mtf_arr <= 0.5)[0][0]] if np.any(mtf_arr <= 0.5) else np.nan
+        except (IndexError, Exception):
             mtf50 = np.nan
 
         try:
-            mtf10 = edge_mtf.spatial_resolution(10)
-        except Exception:
+            mtf10 = freq_arr[np.where(mtf_arr <= 0.1)[0][0]] if np.any(mtf_arr <= 0.1) else np.nan
+        except (IndexError, Exception):
             mtf10 = np.nan
 
         # Prepare chart data (plot all data points without filtering)

@@ -436,7 +436,21 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
         # Show the same RAW/DICOM interpretation metadata controls used by other analyses
         # (based on first uploaded file) so users can see file type, dimensions, and pixel spacing.
         ref_file = raw_files[0]
-        _ = load_single_image(ref_file, 'raw', show_status=False)
+        ref_image, ref_ps_row, ref_ps_col, ref_name = load_single_image(ref_file, 'raw', show_status=False)
+        if ref_image is None:
+            st.error("❌ Failed to load reference image for preview. Please check RAW parameters.")
+            return
+
+        # Same image preview tool used by other APIs
+        with st.expander("🖼️ Image Preview", expanded=False):
+            st.write(f"**Filename:** {ref_name}")
+            st.write(f"**Dimensions:** {ref_image.shape[1]} x {ref_image.shape[0]} pixels")
+            if ref_ps_row and ref_ps_col:
+                st.write(f"**Pixel Spacing:** {ref_ps_row:.3f} x {ref_ps_col:.3f} mm/px")
+
+            # Normalize for display
+            img_display = (ref_image - ref_image.min()) / (ref_image.max() - ref_image.min())
+            st.image(img_display, caption=f"Preview: {ref_name}", use_container_width=True)
         
         st.markdown("---")
         detector_results = display_detector_conversion_section(uploaded_files=raw_files)

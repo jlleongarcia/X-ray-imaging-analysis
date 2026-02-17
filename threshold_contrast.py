@@ -606,6 +606,8 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
     if image_array is not None:
         # Apply detector conversion if available (convert pixel values to kerma)
         detector_conversion_fn = st.session_state.get('detector_conversion', None)
+        if isinstance(detector_conversion_fn, dict) and isinstance(detector_conversion_fn.get('fit'), dict):
+            detector_conversion_fn = detector_conversion_fn.get('fit', {})
         
         is_kerma_image = False
         if detector_conversion_fn is not None:

@@ -65,9 +65,14 @@ def detect_file_type(file_bytes, filename):
 
 def main_app_ui():
     # --- Initialize session state for data sharing ---
-    # Ensure detector conversion cache key exists (stores predict_mpv and fit metadata)
+    # Ensure detector conversion cache key exists (single nested object for fit + results)
     if 'detector_conversion' not in st.session_state:
-        st.session_state['detector_conversion'] = None
+        st.session_state['detector_conversion'] = {
+            'fit': {},
+            'results': None,
+            'ei_fit': {},
+            'sd2_fit': {},
+        }
     
     # Initialize selected category and test in session state
     if 'selected_category' not in st.session_state:
@@ -81,8 +86,12 @@ def main_app_ui():
     
     # Detector conversion status
     _dc = st.session_state['detector_conversion']
-    _dc_loaded = isinstance(_dc, dict) and (_dc.get('predict_mpv') is not None)
+    _fit = _dc.get('fit', {}) if isinstance(_dc, dict) else {}
+    _dc_loaded = isinstance(_fit, dict) and (_fit.get('predict_mpv') is not None)
     st.sidebar.write(f"Detector Conversion: {'✅ Cached' if _dc_loaded else '⚠️ Missing'}")
+    _dc_struct = _dc.get('results') if isinstance(_dc, dict) else None
+    if isinstance(_dc_struct, dict) and isinstance(_dc_struct.get('files'), list):
+        st.sidebar.write(f"Detector files cached: {len(_dc_struct['files'])}")
     
     # MTF cache status
     _mtf_cache = st.session_state.get('mtf_cache')
@@ -304,9 +313,12 @@ def main_app_ui():
     # --- Add a clear session state button for debugging ---
     st.sidebar.markdown("---")
     if st.sidebar.button("Clear All Saved Analysis Data"):
-        st.session_state['detector_conversion'] = None
-        # Also clear structured detector results if present
-        st.session_state['detector_conv'] = None
+        st.session_state['detector_conversion'] = {
+            'fit': {},
+            'results': None,
+            'ei_fit': {},
+            'sd2_fit': {},
+        }
         # Clear MTF and NPS caches
         if 'mtf_cache' in st.session_state:
             del st.session_state['mtf_cache']
@@ -420,11 +432,20 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
         if len(raw_files) < 3:
             st.warning(f"⚠️ Detector Response Curve requires at least 3 RAW files (currently {len(raw_files)} uploaded)")
             return
+
+        # Show the same RAW/DICOM interpretation metadata controls used by other analyses
+        # (based on first uploaded file) so users can see file type, dimensions, and pixel spacing.
+        ref_file = raw_files[0]
+        _ = load_single_image(ref_file, 'raw', show_status=False)
         
         st.markdown("---")
         detector_results = display_detector_conversion_section(uploaded_files=raw_files)
         if detector_results is not None:
-            st.session_state['detector_conversion'] = detector_results
+            _dc_state = st.session_state.get('detector_conversion')
+            if not isinstance(_dc_state, dict):
+                _dc_state = {'fit': {}, 'results': None, 'ei_fit': {}, 'sd2_fit': {}}
+            _dc_state['results'] = detector_results
+            st.session_state['detector_conversion'] = _dc_state
         return
     
     # For all other tests: validate file type consistency
@@ -490,7 +511,7 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
         display_dqe_analysis_section()
 
 
-def load_single_image(uploaded_file, file_type):
+def load_single_image(uploaded_file, file_type, show_status=True):
     """
     Load a single image file (DICOM or RAW) and return the image array and metadata.
     Returns: (image_array, pixel_spacing_row, pixel_spacing_col, filename)
@@ -530,7 +551,8 @@ def load_single_image(uploaded_file, file_type):
                 if image_array.shape != (rows, cols):
                     st.warning(f"⚠️ Dimension mismatch: Tags say {cols}×{rows}, array is {image_array.shape[1]}×{image_array.shape[0]}")
             
-            st.success(f"✅ Loaded DICOM file: {filename}")
+            if show_status:
+                st.success(f"✅ Loaded DICOM file: {filename}")
         except Exception as e:
             st.error(f"❌ Failed to load DICOM: {e}")
             return None, None, None, None
@@ -582,7 +604,8 @@ def load_single_image(uploaded_file, file_type):
                     if image_array.shape != (rows, cols):
                         st.warning(f"⚠️ Dimension mismatch: Tags say {cols}×{rows}, array is {image_array.shape[1]}×{image_array.shape[0]}")
                 
-                st.success("✅ Parsed as DICOM (forced)")
+                if show_status:
+                    st.success("✅ Parsed as DICOM (forced)")
             except Exception as e:
                 st.error(f"❌ Failed to parse as DICOM: {e}")
                 return None, None, None, None
@@ -721,11 +744,13 @@ def load_single_image(uploaded_file, file_type):
                     # File has DICOM header - extract pixel data using pydicom to skip header
                     ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True)
                     image_array = ds.pixel_array
-                    st.success("✅ RAW file loaded (pixel data extracted from DICOM structure)")
+                    if show_status:
+                        st.success("✅ RAW file loaded (pixel data extracted from DICOM structure)")
                 else:
                     # True RAW file with no header - read all bytes as pixel data
                     image_array = np.frombuffer(file_bytes, dtype=np_dtype).reshape((height, width))
-                    st.success("✅ RAW file loaded successfully")
+                    if show_status:
+                        st.success("✅ RAW file loaded successfully")
             except Exception as e:
                 st.error(f"❌ Failed to load RAW: {e}")
                 return None, None, None, None

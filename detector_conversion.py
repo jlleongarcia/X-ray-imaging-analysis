@@ -273,9 +273,30 @@ def _compute_dominance_interval(a, b, c):
         "dominance_interval_degenerate": (bool(interval_degenerate) if interval_degenerate is not None else None)
     }
 
-def _render_cached_fit(cache_key, title, x_label, y_label):
+def _get_detector_conversion_state() -> dict:
+    """Get unified detector conversion state container from session.
+
+    Structure:
+      detector_conversion = {
+        'fit': {...},
+        'results': {...} | None,
+        'ei_fit': {...},
+        'sd2_fit': {...}
+      }
+    """
+    state = st.session_state.get("detector_conversion")
+    if not isinstance(state, dict):
+        state = {}
+    state.setdefault("fit", {})
+    state.setdefault("results", None)
+    state.setdefault("ei_fit", {})
+    state.setdefault("sd2_fit", {})
+    st.session_state["detector_conversion"] = state
+    return state
+
+
+def _render_cached_fit(cached, title, x_label, y_label):
     """Render a cached fit with formula, R², deviations, and plot."""
-    cached = st.session_state.get(cache_key)
     if not (isinstance(cached, dict) and cached.get("coeffs") is not None):
         return
     
@@ -338,6 +359,8 @@ def display_detector_conversion_section(uploaded_files=None):
         st.info("Upload one or more RAW/STD files to begin")
         return None
 
+    dc_state = _get_detector_conversion_state()
+
     dtype_map = {"uint8": np.uint8, "uint16": np.uint16, "float32": np.float32}
     dtype_str = st.selectbox("Pixel dtype", options=list(dtype_map.keys()), index=1)
     dtype = dtype_map[dtype_str]
@@ -390,7 +413,7 @@ def display_detector_conversion_section(uploaded_files=None):
             pred_fn = _build_prediction_fn(fit_method, p, poly_degree)
             deviations_list, max_dev = _compute_deviations(mpv_vals, fit_vals)
             
-            st.session_state["detector_conversion"] = {
+            dc_state["fit"] = {
                 "method": fit_method, "coeffs": p.tolist(), 
                 "poly_degree": int(poly_degree) if fit_method == 'poly' else None,
                 "formula": formula, "latex_formula": _latex_formula(fit_method, p, poly_degree),
@@ -398,11 +421,12 @@ def display_detector_conversion_section(uploaded_files=None):
                 "x_data": kerma_vals, "y_data": mpv_vals, "y_fit": fit_vals.tolist(),
                 "max_deviation": max_dev
             }
+            st.session_state["detector_conversion"] = dc_state
             detector_curve_fitted = True
         except Exception as e:
             st.error(f"Fit failed: {e}")
 
-    _render_cached_fit("detector_conversion", "Detector Response", r"$k$ (μGy)", "MPV")
+    _render_cached_fit(dc_state.get("fit"), "Detector Response", r"$k$ (μGy)", "MPV")
 
     # --- Exposition Index (EI) vs Kerma ---
     st.write("### Exposition Index (EI) vs Kerma Fit")
@@ -413,24 +437,25 @@ def display_detector_conversion_section(uploaded_files=None):
             try:
                 fit_vals_ei, formula_ei, r2_ei, p_ei = _fit_mpv_vs_kerma(kerma_vals, ei_vals, 'linear', 1)
                 deviations_ei, max_dev_ei = _compute_deviations(ei_vals, fit_vals_ei)
-                st.session_state["detector_ei_fit"] = {
+                dc_state["ei_fit"] = {
                     "method": "linear", "coeffs": p_ei.tolist(), "formula": formula_ei,
                     "latex_formula": rf"EI = {p_ei[0]:.4g}\,k + {p_ei[1]:.4g}",
                     "r2": float(r2_ei) if not np.isnan(r2_ei) else None,
                     "x_data": kerma_vals, "y_data": ei_vals, "y_fit": fit_vals_ei.tolist(),
                     "max_deviation": max_dev_ei
                 }
+                st.session_state["detector_conversion"] = dc_state
             except Exception as e:
                 st.error(f"EI fit failed: {e}")
     
-    _render_cached_fit("detector_ei_fit", "EI vs Kerma", r"$k$ (μGy)", "Exposition Index (EI)")
+    _render_cached_fit(dc_state.get("ei_fit"), "EI vs Kerma", r"$k$ (μGy)", "Exposition Index (EI)")
 
     # --- Noise: σ² vs Kerma ---
     st.write("### Noise: σ² vs Kerma")
     st.caption("Compute σ on linearized (kerma-domain) ROI, square it (σ²), then fit σ² = a·k² + b·k + c.")
     
     if st.button("Run fit: σ² vs Kerma", key="run_fit_sd2"):
-        conv = st.session_state.get("detector_conversion")
+        conv = dc_state.get("fit")
         if not (isinstance(conv, dict) and conv.get("coeffs")):
             st.error("Run the Detector Response Curve fit first.")
         else:
@@ -496,7 +521,7 @@ def display_detector_conversion_section(uploaded_files=None):
                     interval_info = _compute_dominance_interval(a_, b_, c_)
                     
                     # Store results
-                    st.session_state["detector_sd2_fit"] = {
+                    dc_state["sd2_fit"] = {
                         "coeffs": [float(a_), float(b_), float(c_)],
                         "formula": f"σ² = {a_:.4g}·k² + {b_:.4g}·k + {c_:.4g}",
                         "latex_formula": rf"\sigma² = {a_:.4g}\,k² + {b_:.4g}\,k + {c_:.4g}",
@@ -504,13 +529,14 @@ def display_detector_conversion_section(uploaded_files=None):
                         "sd2": [None if not np.isfinite(v) else float(v) for v in y_arr],
                         **interval_info
                     }
+                    st.session_state["detector_conversion"] = dc_state
             except NotImplementedError as nie:
                 st.error(str(nie))
             except Exception as e:
                 st.error(f"SD_norm fit failed: {e}")
 
     # Render cached SD² fit
-    cached_sd = st.session_state.get("detector_sd2_fit")
+    cached_sd = dc_state.get("sd2_fit")
     if isinstance(cached_sd, dict) and cached_sd.get("coeffs"):
         st.latex(cached_sd.get("latex_formula")) if cached_sd.get("latex_formula") else st.write(cached_sd.get("formula", ""))
         if cached_sd.get("r2") is not None:
@@ -568,20 +594,29 @@ def display_detector_conversion_section(uploaded_files=None):
     for r in results["files"]:
         writer.writerow([r['filename'], r['kerma'], r['mpv'], r['sd'], r.get('ei')])
     st.download_button('Download results CSV', data=output.getvalue(), file_name='detector_conversion_results.csv')
+
+    # Persist latest structured file summary each run
+    dc_state["results"] = {
+        "files": [{"filename": r["filename"], "kerma": r["kerma"], "mpv": r["mpv"],
+                   "sd": r["sd"], "ei": r.get('ei')} for r in results["files"]]
+    }
+    st.session_state["detector_conversion"] = dc_state
     
     # Return structured results if detector curve was fitted this run
     if detector_curve_fitted:
-        cached = st.session_state.get("detector_conversion", {})
-        cached_ei = st.session_state.get("detector_ei_fit", {})
-        return {
-            "files": [{"filename": r["filename"], "kerma": r["kerma"], "mpv": r["mpv"], 
-                      "sd": r["sd"], "ei": r.get('ei')} for r in results["files"]],
+        cached_fit = dc_state.get("fit", {})
+        cached_ei = dc_state.get("ei_fit", {})
+        returned = {
+            "files": dc_state["results"]["files"],
             "fit": {
-                "method": cached.get("method"), "formula": cached.get("formula"),
-                "r2": cached.get("r2"), "coeffs": cached.get("coeffs"),
+                "method": cached_fit.get("method"), "formula": cached_fit.get("formula"),
+                "r2": cached_fit.get("r2"), "coeffs": cached_fit.get("coeffs"),
                 "kerma": kerma_vals, "mpv": mpv_vals,
-                "ei_fit": {"formula": cached_ei.get("formula"), "r2": cached_ei.get("r2"), 
+                "ei_fit": {"formula": cached_ei.get("formula"), "r2": cached_ei.get("r2"),
                           "coeffs": cached_ei.get("coeffs")}
             }
         }
+        dc_state["results"] = returned
+        st.session_state["detector_conversion"] = dc_state
+        return returned
     return None

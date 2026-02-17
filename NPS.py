@@ -49,6 +49,8 @@ def _autodetect_kerma_from_detector_conversion(image: np.ndarray, default_kerma:
         
         # Get detector conversion parameters
         det_conv = st.session_state['detector_conversion']
+        if isinstance(det_conv, dict) and isinstance(det_conv.get('fit'), dict):
+            det_conv = det_conv.get('fit', {})
         fit_params = det_conv.get('fit_params', {})
         
         # Try MPV->Kerma conversion
@@ -354,6 +356,8 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, add
 
     # Apply inverse detector conversion to all images
     conv = st.session_state.get("detector_conversion")
+    if isinstance(conv, dict) and isinstance(conv.get('fit'), dict):
+        conv = conv.get('fit', {})
     domain_used = "pixel"
     converted_images = []
     for img in all_images:

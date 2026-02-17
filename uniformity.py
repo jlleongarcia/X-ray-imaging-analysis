@@ -360,6 +360,8 @@ def display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_sp
             with st.spinner("Calculating uniformity metrics (kerma-domain)..."):
                 # Apply inverse detector conversion (pixel -> kerma) if available
                 conv = st.session_state.get("detector_conversion")
+                if isinstance(conv, dict) and isinstance(conv.get('fit'), dict):
+                    conv = conv.get('fit', {})
                 kerma_image, caption_msg = _apply_inverse_conversion(image_array, conv)
                 
                 if "warning" in caption_msg.lower() or "failed" in caption_msg.lower():

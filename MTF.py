@@ -172,16 +172,38 @@ def _load_image_from_file(uploaded_file):
 
 
 def _load_raw_file(uploaded_file, dtype, height, width):
-    """Load RAW file with specified dtype and dimensions (like detector_conversion.py)."""
+    """Load RAW file with DICOM-aware fallback.
+
+    Priority:
+    1) Try DICOM pixel extraction (handles .raw/.std files with DICOM headers)
+    2) Fallback to true RAW byte reshape using provided dtype/shape
+    """
     filename = uploaded_file.name
     file_bytes = uploaded_file.getvalue()
     
     try:
-        arr = np.frombuffer(file_bytes, dtype=dtype)
+        # First try DICOM-aware loading (robust for pseudo-RAW files containing headers)
+        try:
+            ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True)
+            if hasattr(ds, 'pixel_array'):
+                img = ds.pixel_array
+                if isinstance(img, np.ndarray) and img.ndim == 2 and img.size > 0:
+                    return img, filename
+        except Exception:
+            pass
+
+        # Fallback: true headerless RAW with user/reference dtype and dimensions
+        np_dtype = np.dtype(dtype)
+        arr = np.frombuffer(file_bytes, dtype=np_dtype)
         expected_size = height * width
+        expected_bytes = expected_size * np_dtype.itemsize
+        total_bytes = len(file_bytes)
         
         if arr.size != expected_size:
-            st.warning(f"⚠️ {filename}: Size mismatch (expected {expected_size} pixels, got {arr.size})")
+            st.warning(
+                f"⚠️ {filename}: Size mismatch (expected {expected_size} pixels / {expected_bytes} bytes, "
+                f"got {arr.size} pixels / {total_bytes} bytes)"
+            )
             return None, filename
         
         img = arr.reshape((height, width))
@@ -233,7 +255,15 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         # For RAW files, all files use the same dtype/dimensions
         if raw_params is not None:
             images_data = []
-            for uf in uploaded_files:
+
+            # Reuse already-loaded primary image from single-image pipeline
+            if image_array is None:
+                st.error("⚠️ First RAW image not loaded.")
+                return
+            images_data.append((image_array, uploaded_files[0].name))
+
+            # Load remaining RAW file(s) with DICOM-aware fallback
+            for uf in uploaded_files[1:]:
                 img, fname = _load_raw_file(uf, raw_params['dtype'], raw_params['height'], raw_params['width'])
                 if img is not None:
                     images_data.append((img, fname))

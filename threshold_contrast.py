@@ -764,7 +764,7 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
                         
                         # Create markdown table with LaTeX headers
                         markdown_table = f"""
-| **SubROI Size (px)** | **# SubROIs** | **Diameter $d$ (mm)** | **$C_{{T}}$ (random units)** | **$C_{{T}}$ (%) | **$\\sigma$ (random units)** | **$\\sigma$ (%)** |
+| **SubROI Size (px)** | **# SubROIs** | **Diameter $d$ (mm)** | **$C_{{T}}$ (random units)** | **$C_{{T}}$ (%)** | **$\\sigma$ (random units)** | **$\\sigma$ (%)** |
 |:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 """
                         

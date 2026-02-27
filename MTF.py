@@ -16,6 +16,13 @@ def _bump_mtf_refresh():
     """Callback to force a Streamlit rerun when MTF inputs change."""
     st.session_state['mtf_refresh'] = st.session_state.get('mtf_refresh', 0) + 1
 
+
+def _file_name_and_bytes(file_obj):
+    """Return (filename, bytes) for Streamlit upload objects or preloaded payload dicts."""
+    if isinstance(file_obj, dict):
+        return file_obj.get('name', 'unknown'), file_obj.get('bytes', b'')
+    return getattr(file_obj, 'name', 'unknown'), file_obj.getvalue()
+
 def _compute_geometric_mean_mtf(mtf_results_list):
     """Compute geometric mean of two orthogonal MTF measurements.
     
@@ -155,8 +162,7 @@ def calculate_mtf_metrics(edge_roi: np.ndarray, pixel_spacing: float) -> dict:
 
 def _load_image_from_file(uploaded_file):
     """Helper function to load DICOM image from uploaded file."""
-    filename = uploaded_file.name
-    file_bytes = uploaded_file.getvalue()
+    filename, file_bytes = _file_name_and_bytes(uploaded_file)
     
     # Try DICOM parsing
     try:
@@ -178,8 +184,7 @@ def _load_raw_file(uploaded_file, dtype, height, width):
     1) Try DICOM pixel extraction (handles .raw/.std files with DICOM headers)
     2) Fallback to true RAW byte reshape using provided dtype/shape
     """
-    filename = uploaded_file.name
-    file_bytes = uploaded_file.getvalue()
+    filename, file_bytes = _file_name_and_bytes(uploaded_file)
     
     try:
         # First try DICOM-aware loading (robust for pseudo-RAW files containing headers)
@@ -239,7 +244,7 @@ def _create_mtf_chart(df_mtf, mtf_results, has_comparison):
     return chart.properties(title=title, height=400).interactive()
 
 
-def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, uploaded_files=None, raw_params=None):
+def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, raw_params=None, preloaded_files=None):
     """Display the MTF analysis UI with ROI selection and IEC-compliant edge method."""
     st.subheader("Modulation Transfer Function (MTF) Analysis")
     
@@ -248,7 +253,8 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     """)
 
     # Check if we're in comparison mode
-    comparison_mode = uploaded_files is not None and len(uploaded_files) == 2
+    files_for_comparison = preloaded_files
+    comparison_mode = files_for_comparison is not None and len(files_for_comparison) == 2
     
     if comparison_mode:
         
@@ -260,15 +266,21 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
             if image_array is None:
                 st.error("⚠️ First RAW image not loaded.")
                 return
-            images_data.append((image_array, uploaded_files[0].name))
+            first_name = files_for_comparison[0].get('name', 'Image 1') if isinstance(files_for_comparison[0], dict) else files_for_comparison[0].name
+            images_data.append((image_array, first_name))
 
             # Load remaining RAW file(s) with DICOM-aware fallback
-            for uf in uploaded_files[1:]:
-                img, fname = _load_raw_file(uf, raw_params['dtype'], raw_params['height'], raw_params['width'])
+            for uf in files_for_comparison[1:]:
+                if isinstance(uf, dict) and isinstance(uf.get('image_array'), np.ndarray):
+                    img = uf.get('image_array')
+                    fname = uf.get('name', 'Image')
+                else:
+                    img, fname = _load_raw_file(uf, raw_params['dtype'], raw_params['height'], raw_params['width'])
                 if img is not None:
                     images_data.append((img, fname))
                 else:
-                    st.error(f"⚠️ Could not load {uf.name}")
+                    failed_name = uf.get('name', 'image') if isinstance(uf, dict) else uf.name
+                    st.error(f"⚠️ Could not load {failed_name}")
                     return
             
             if len(images_data) == 2:
@@ -279,16 +291,22 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                 st.error("⚠️ First image not loaded.")
                 return
             
-            images_data = [(image_array, uploaded_files[0].name)]
+            first_name = files_for_comparison[0].get('name', 'Image 1') if isinstance(files_for_comparison[0], dict) else files_for_comparison[0].name
+            images_data = [(image_array, first_name)]
             
             # Try loading second as DICOM
-            img2, fname2 = _load_image_from_file(uploaded_files[1])
+            second_payload = files_for_comparison[1]
+            if isinstance(second_payload, dict) and isinstance(second_payload.get('image_array'), np.ndarray):
+                img2, fname2 = second_payload.get('image_array'), second_payload.get('name', 'Image 2')
+            else:
+                img2, fname2 = _load_image_from_file(second_payload)
             
             if img2 is not None:
                 images_data.append((img2, fname2))
                 st.success(f"✓ Loaded both images successfully")
             else:
-                st.error(f"⚠️ Could not load second image '{uploaded_files[1].name}'")
+                second_name = files_for_comparison[1].get('name', 'Image 2') if isinstance(files_for_comparison[1], dict) else files_for_comparison[1].name
+                st.error(f"⚠️ Could not load second image '{second_name}'")
                 return
         
         if len(images_data) < 2:

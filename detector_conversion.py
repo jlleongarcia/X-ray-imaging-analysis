@@ -6,6 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import statsmodels.api as sm
 from scipy.optimize import least_squares
+from raw_endian import frombuffer_with_endian
 
 """
 Detector conversion feature: Upload RAW/STD files, assign kerma values, extract ROI stats,
@@ -14,13 +15,21 @@ fit MPV vs Kerma curves (linear/log/poly), and analyze noise characteristics.
 
 # ==================== HELPER FUNCTIONS ====================
 
-def _read_raw_as_square(raw_bytes, dtype):
-    """Read raw bytes and reshape into largest possible square array."""
-    pixels = np.frombuffer(raw_bytes, dtype=dtype)
+def _read_raw_as_square(raw_bytes, dtype, little_endian=True, auto_endian_from_dicom=True):
+    """Read raw bytes and reshape into largest possible square array.
+
+    If a DICOM header with Transfer Syntax UID is present, endian can be auto-detected.
+    """
+    pixels, endian_used, endian_source = frombuffer_with_endian(
+        raw_bytes,
+        dtype,
+        default_little_endian=little_endian,
+        auto_endian_from_dicom=auto_endian_from_dicom,
+    )
     side = int(np.floor(np.sqrt(pixels.size)))
     if side < 100:
         raise ValueError(f"Inferred square size {side} < 100; cannot extract 100x100 ROI")
-    return pixels[:side*side].reshape((side, side))
+    return pixels[:side*side].reshape((side, side)), endian_used, endian_source
 
 
 def _central_roi_stats(img_array, roi_h=100, roi_w=100):
@@ -295,6 +304,13 @@ def _get_detector_conversion_state() -> dict:
     return state
 
 
+def _file_name_and_bytes(file_obj):
+    """Return (filename, bytes) for Streamlit UploadedFile or preloaded payload dict."""
+    if isinstance(file_obj, dict):
+        return file_obj.get('name', 'unknown'), file_obj.get('bytes', b'')
+    return getattr(file_obj, 'name', 'unknown'), file_obj.getvalue()
+
+
 def _render_cached_fit(cached, title, x_label, y_label):
     """Render a cached fit with formula, R², deviations, and plot."""
     if not (isinstance(cached, dict) and cached.get("coeffs") is not None):
@@ -364,14 +380,18 @@ def display_detector_conversion_section(uploaded_files=None):
     dtype_map = {"uint8": np.uint8, "uint16": np.uint16, "float32": np.float32}
     dtype_str = st.selectbox("Pixel dtype", options=list(dtype_map.keys()), index=1)
     dtype = dtype_map[dtype_str]
+    default_little_endian = bool(st.session_state.get("raw_little_endian_default", True))
 
     st.markdown("---")
     st.write("Enter kerma and EI values for each file")
     kerma_vals, results = [], {"files": []}
-    uploaded_exts = [(f.name.split('.')[-1] if '.' in f.name else '').lower() for f in uploaded]
+    uploaded_exts = []
+    for f in uploaded:
+        fname, _ = _file_name_and_bytes(f)
+        uploaded_exts.append((fname.split('.')[-1] if '.' in fname else '').lower())
     
     for f in uploaded:
-        fname = f.name
+        fname, fbytes = _file_name_and_bytes(f)
         col_a, col_b = st.columns(2)
         with col_a:
             kerma_val = st.number_input(f"Kerma (μGy) — {fname}", value=0.0, format="%.4f", key=f"kerma_{fname}")
@@ -380,15 +400,21 @@ def display_detector_conversion_section(uploaded_files=None):
         kerma_vals.append(kerma_val)
         
         try:
-            arr = _read_raw_as_square(f.getvalue(), dtype)
+            arr, endian_used, endian_source = _read_raw_as_square(
+                fbytes,
+                dtype,
+                little_endian=default_little_endian,
+                auto_endian_from_dicom=True
+            )
             mpv, sd, roi = _central_roi_stats(arr)
             results["files"].append({
                 "filename": fname, "kerma": float(kerma_val), "ei": float(ei_val),
                 "mpv": float(mpv), "sd": float(sd), "roi": roi
             })
             st.write(f"MPV: {mpv:.3f}, σ: {sd:.3f}")
+            st.caption(f"Endian used: {'little' if endian_used else 'big'} ({endian_source})")
         except Exception as e:
-            st.error(f"Failed to process {f.name}: {e}")
+            st.error(f"Failed to process {fname}: {e}")
             return None
     
     st.markdown("---")

@@ -168,7 +168,8 @@ def _try_load_raw_std(data: bytes, ext: str, reference_shape: Optional[tuple],
         return None
     
     try:
-        return np.frombuffer(data, dtype=reference_dtype).reshape(reference_shape).astype(float)
+        arr = np.frombuffer(data, dtype=reference_dtype)
+        return arr.reshape(reference_shape).astype(float)
     except Exception:
         return None
 
@@ -277,12 +278,24 @@ def _load_uploaded_images(files, reference_shape: Optional[tuple]=None, referenc
     arrays: List[np.ndarray] = []
 
     for f in files or []:
-        fname = getattr(f, 'name', 'unknown') or 'unknown'
+        if isinstance(f, dict) and isinstance(f.get('image_array'), np.ndarray):
+            arr_preloaded = f.get('image_array')
+            if arr_preloaded.ndim == 2 and arr_preloaded.size > 0:
+                arrays.append(arr_preloaded.astype(float))
+                continue
+
+        if isinstance(f, dict):
+            fname = f.get('name', 'unknown') or 'unknown'
+        else:
+            fname = getattr(f, 'name', 'unknown') or 'unknown'
         ext = fname.lower().rsplit('.', 1)[-1] if '.' in fname else ''
 
         # Read bytes once
         try:
-            data = f.getvalue() if hasattr(f, 'getvalue') else f.read()
+            if isinstance(f, dict):
+                data = f.get('bytes', b'')
+            else:
+                data = f.getvalue() if hasattr(f, 'getvalue') else f.read()
         except Exception:
             data = None
         
@@ -558,7 +571,7 @@ def _create_nnps_chart(df_combined: pd.DataFrame, x_label: str, nyquist_freq: fl
 
     return alt.layer(base_chart, selectors, points, text)
 
-def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, uploaded_files=None):
+def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, preloaded_files=None):
     st.subheader("Noise Power Spectrum (NPS) Analysis")
 
     st.write("""
@@ -578,7 +591,8 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     # Load all uploaded images for NPS analysis
     ref_dtype = image_array.dtype if isinstance(image_array, np.ndarray) else None
     ref_shape = image_array.shape if isinstance(image_array, np.ndarray) and image_array.ndim == 2 else None
-    additional_arrays = _load_uploaded_images(uploaded_files, reference_shape=ref_shape, reference_dtype=ref_dtype) if uploaded_files else []
+    source_files = preloaded_files
+    additional_arrays = _load_uploaded_images(source_files, reference_shape=ref_shape, reference_dtype=ref_dtype) if source_files else []
 
     # Big ROI size selector in mm (IEC recommends 125 mm; user-adjustable)
     if 'nps_big_roi_mm' not in st.session_state:

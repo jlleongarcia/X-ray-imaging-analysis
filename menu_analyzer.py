@@ -4,6 +4,7 @@ import numpy as np
 import os
 import io
 from PIL import Image
+from raw_endian import frombuffer_with_endian
 
 # Import functions from your analysis modules
 from uniformity import display_uniformity_analysis_section
@@ -17,6 +18,181 @@ from DQE import display_dqe_analysis_section
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(page_title="X-ray Image Analysis Toolkit", layout="wide")
+
+
+def _file_name_and_bytes(file_obj):
+    """Return (filename, file_bytes) for Streamlit upload objects or preloaded payload dicts."""
+    if isinstance(file_obj, dict):
+        return file_obj.get('name', 'unknown'), file_obj.get('bytes', b'')
+    name = getattr(file_obj, 'name', 'unknown')
+    data = file_obj.getvalue() if hasattr(file_obj, 'getvalue') else b''
+    return name, data
+
+
+def _build_preloaded_payloads(file_types):
+    """Build preloaded payloads so bytes are read once and shared across APIs."""
+    payloads = []
+    for f, ftype, detected_type in file_types:
+        fname, file_bytes = _file_name_and_bytes(f)
+        payloads.append({
+            'name': fname,
+            'bytes': file_bytes,
+            'file_type': ftype,
+            'detected_type': detected_type,
+        })
+    return payloads
+
+
+def _ensure_payload_loaded(payload: dict, show_status: bool = False, key_prefix: str = "") -> dict:
+    """Ensure a preloaded payload has decoded image data from centralized loader."""
+    if not isinstance(payload, dict):
+        return payload
+    if isinstance(payload.get('image_array'), np.ndarray):
+        return payload
+
+    file_type = payload.get('file_type')
+    if file_type not in ('raw', 'dicom'):
+        return payload
+
+    img, ps_row, ps_col, _ = load_single_image(
+        payload,
+        file_type,
+        show_status=show_status,
+        key_prefix=key_prefix,
+        shared_raw_params=st.session_state.get('shared_raw_params_current_test'),
+    )
+    payload['image_array'] = img
+    payload['pixel_spacing_row'] = ps_row
+    payload['pixel_spacing_col'] = ps_col
+    return payload
+
+
+def _build_shared_raw_params(raw_payloads, context_key=""):
+    """Render one shared RAW parameter section and return parameters for all RAW files."""
+    if not raw_payloads:
+        return None
+
+    ref_name, ref_bytes = _file_name_and_bytes(raw_payloads[0])
+
+    dicom_rows = None
+    dicom_cols = None
+    dicom_ps_row = None
+    dicom_ps_col = None
+
+    try:
+        ds_meta = pydicom.dcmread(io.BytesIO(ref_bytes), force=True, stop_before_pixels=True)
+        dicom_rows = getattr(ds_meta, 'Rows', None)
+        dicom_cols = getattr(ds_meta, 'Columns', None)
+        ps = getattr(ds_meta, 'ImagerPixelSpacing', None)
+        if ps is None:
+            ps = getattr(ds_meta, 'PixelSpacing', None)
+        if ps and len(ps) >= 2:
+            dicom_ps_row = float(ps[0])
+            dicom_ps_col = float(ps[1])
+    except Exception:
+        pass
+
+    with st.sidebar:
+        st.markdown("### 🔧 RAW File Parameters")
+        st.caption("Applied to all uploaded RAW/STD files in this analysis.")
+        st.caption(f"Reference file: {ref_name}")
+
+        if dicom_rows and dicom_cols:
+            st.info(f"📋 DICOM metadata found: {dicom_cols}×{dicom_rows} pixels")
+
+        dtype_map = {
+            '16-bit Unsigned Integer': np.uint16,
+            '8-bit Unsigned Integer': np.uint8,
+            '32-bit Float': np.float32
+        }
+        dtype_str = st.selectbox(
+            "Pixel Data Type",
+            options=list(dtype_map.keys()),
+            index=0,
+            key=f"{context_key}dtype_shared"
+        )
+        np_dtype = dtype_map[dtype_str]
+
+        itemsize = np.dtype(np_dtype).itemsize
+        file_size = len(ref_bytes)
+
+        if file_size % itemsize != 0:
+            st.error(f"File size ({file_size} bytes) is not a multiple of pixel size ({itemsize} bytes)")
+            return None
+
+        total_pixels = file_size // itemsize
+
+        if dicom_rows and dicom_cols:
+            width = int(dicom_cols)
+            height = int(dicom_rows)
+            st.write("**Dimensions (from DICOM tags):**")
+            st.write(f"{width} × {height} pixels")
+            st.caption("Using Rows (0028,0010) and Columns (0028,0011) tags")
+        else:
+            def get_factors(n):
+                factors = set()
+                for i in range(1, int(np.sqrt(n)) + 1):
+                    if n % i == 0:
+                        factors.add((i, n // i))
+                        factors.add((n // i, i))
+                return sorted(list(factors))
+
+            possible_dims = get_factors(total_pixels)
+            if not possible_dims:
+                st.error(f"Could not determine valid dimensions for {total_pixels} pixels")
+                return None
+
+            reasonable_dims = []
+            for h, w in possible_dims:
+                aspect_ratio = w / h
+                if 1 / 3 <= aspect_ratio <= 3:
+                    reasonable_dims.append((h, w))
+
+            if not reasonable_dims:
+                reasonable_dims = possible_dims
+                st.warning("Showing all dimensions (no square-like options found)")
+
+            default_dim_index = len(reasonable_dims) // 2
+            dim_options = [f"{w} x {h}" for h, w in reasonable_dims]
+            selected_dim = st.selectbox(
+                "Image Dimensions (Width x Height)",
+                options=dim_options,
+                index=default_dim_index,
+                key=f"{context_key}dims_shared"
+            )
+
+            width, height = map(int, selected_dim.split(" x "))
+            st.caption(f"Selected: **{width} x {height}** pixels ({width * height:,} total)")
+
+        default_ps_row = dicom_ps_row if dicom_ps_row else 0.1
+        default_ps_col = dicom_ps_col if dicom_ps_col else 0.1
+
+        pixel_spacing_row = st.number_input(
+            "Pixel Spacing Row (mm/px)",
+            min_value=0.001,
+            value=default_ps_row,
+            step=0.01,
+            format="%.3f",
+            key=f"{context_key}ps_row_shared",
+            help="From ImagerPixelSpacing (0018,1164)" if dicom_ps_row else None
+        )
+        pixel_spacing_col = st.number_input(
+            "Pixel Spacing Col (mm/px)",
+            min_value=0.001,
+            value=default_ps_col,
+            step=0.01,
+            format="%.3f",
+            key=f"{context_key}ps_col_shared",
+            help="From ImagerPixelSpacing (0018,1164)" if dicom_ps_col else None
+        )
+
+    return {
+        'dtype': np_dtype,
+        'width': int(width),
+        'height': int(height),
+        'pixel_spacing_row': float(pixel_spacing_row),
+        'pixel_spacing_col': float(pixel_spacing_col),
+    }
 
 def detect_file_type(file_bytes, filename):
     """
@@ -95,6 +271,19 @@ def main_app_ui():
         st.session_state['selected_category'] = None
     if 'selected_test' not in st.session_state:
         st.session_state['selected_test'] = None
+
+    if 'raw_little_endian_default' not in st.session_state:
+        st.session_state['raw_little_endian_default'] = True
+
+    with st.sidebar:
+        st.markdown("---")
+        st.subheader("RAW Endian Settings")
+        st.checkbox(
+            "Little-endian (global default)",
+            value=st.session_state['raw_little_endian_default'],
+            key='raw_little_endian_default',
+            help="Applied to RAW/STD parsing app-wide. DICOM Transfer Syntax UID (0002,0010) overrides when available."
+        )
 
     # Always display session state status in the sidebar for debugging
     st.sidebar.markdown("---")
@@ -377,11 +566,17 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
                 key=f"file_type_override_{test_name}_{idx}_{f.name}"
             )
         file_types.append((f, ui_to_internal[selected_ui], detected_type))
+
+    preloaded_payloads = _build_preloaded_payloads(file_types)
     
     # Categorize files
     dicom_files = [f for f, ftype, _ in file_types if ftype == 'dicom']
     raw_files = [f for f, ftype, _ in file_types if ftype == 'raw']
     unknown_files = [f for f, ftype, _ in file_types if ftype == 'unknown']
+    raw_payloads = [p for p in preloaded_payloads if p['file_type'] == 'raw']
+
+    shared_raw_params = _build_shared_raw_params(raw_payloads, context_key=f"{test_name}_") if raw_payloads else None
+    st.session_state['shared_raw_params_current_test'] = shared_raw_params
     
     # Show file detection info in expander
     with st.expander("📁 Uploaded Files", expanded=False):
@@ -411,7 +606,9 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
     if test_name == "RAW vs DICOM Comparison":
         # Special case: comparison tool handles mixed files
         st.markdown("---")
-        display_comparison_tool_section(uploaded_files)
+        for idx, p in enumerate(preloaded_payloads):
+            _ensure_payload_loaded(p, show_status=False, key_prefix=f"preload_cmp_{idx}")
+        display_comparison_tool_section(preloaded_payloads)
         return
     
     elif test_name == "Convert to DICOM":
@@ -422,7 +619,7 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
         
         # Load the image first
         image_array, pixel_spacing_row, pixel_spacing_col, dicom_filename = load_single_image(
-            uploaded_files[0], file_types[0][1]
+            preloaded_payloads[0], file_types[0][1]
         )
         
         if image_array is not None:
@@ -475,8 +672,13 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
 
         # Show the same RAW/DICOM interpretation metadata controls used by other analyses
         # (based on first uploaded file) so users can see file type, dimensions, and pixel spacing.
-        ref_file = raw_files[0]
-        ref_image, ref_ps_row, ref_ps_col, ref_name = load_single_image(ref_file, 'raw', show_status=False)
+        ref_file = raw_payloads[0]
+        ref_image, ref_ps_row, ref_ps_col, ref_name = load_single_image(
+            ref_file,
+            'raw',
+            show_status=False,
+            shared_raw_params=shared_raw_params,
+        )
         if ref_image is None:
             st.error("❌ Failed to load reference image for preview. Please check RAW parameters.")
             return
@@ -493,7 +695,7 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
             st.image(img_display, caption=f"Preview: {ref_name}", use_container_width=True)
         
         st.markdown("---")
-        detector_results = display_detector_conversion_section(uploaded_files=raw_files)
+        detector_results = display_detector_conversion_section(uploaded_files=raw_payloads)
         if detector_results is not None:
             _dc_state = st.session_state.get('detector_conversion')
             if not isinstance(_dc_state, dict):
@@ -515,11 +717,11 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
         return
     
     # Load first image
-    primary_file = uploaded_files[0]
+    primary_file = preloaded_payloads[0]
     primary_file_type = file_types[0][1]
     
     image_array, pixel_spacing_row, pixel_spacing_col, dicom_filename = load_single_image(
-        primary_file, primary_file_type
+        primary_file, primary_file_type, shared_raw_params=shared_raw_params
     )
     
     if image_array is None:
@@ -552,11 +754,23 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
                 'height': image_array.shape[0],
                 'width': image_array.shape[1]
             }
-        display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, 
-                                    uploaded_files=uploaded_files, raw_params=raw_params_for_mtf)
+        display_mtf_analysis_section(
+            image_array,
+            pixel_spacing_row,
+            pixel_spacing_col,
+            raw_params=raw_params_for_mtf,
+            preloaded_files=preloaded_payloads,
+        )
     
     elif test_name == "NPS (Noise)":
-        display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, uploaded_files=uploaded_files)
+        for idx, p in enumerate(preloaded_payloads):
+            _ensure_payload_loaded(p, show_status=False, key_prefix=f"preload_nps_{idx}")
+        display_nps_analysis_section(
+            image_array,
+            pixel_spacing_row,
+            pixel_spacing_col,
+            preloaded_files=preloaded_payloads,
+        )
     
     elif test_name == "Threshold Contrast":
         display_threshold_contrast_section(image_array, pixel_spacing_row, pixel_spacing_col)
@@ -565,7 +779,7 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
         display_dqe_analysis_section()
 
 
-def load_single_image(uploaded_file, file_type, show_status=True):
+def load_single_image(uploaded_file, file_type, show_status=True, key_prefix="", shared_raw_params=None):
     """
     Load a single image file (DICOM or RAW) and return the image array and metadata.
     Returns: (image_array, pixel_spacing_row, pixel_spacing_col, filename)
@@ -574,10 +788,10 @@ def load_single_image(uploaded_file, file_type, show_status=True):
     image_array = None
     pixel_spacing_row = None
     pixel_spacing_col = None
-    filename = uploaded_file.name
+    filename, file_bytes = _file_name_and_bytes(uploaded_file)
     
-    file_bytes = uploaded_file.getvalue()
-    
+    key_tag = f"{key_prefix}_" if key_prefix else ""
+
     if file_type == 'dicom':
         # Load as DICOM
         try:
@@ -612,6 +826,48 @@ def load_single_image(uploaded_file, file_type, show_status=True):
             return None, None, None, None
     
     elif file_type == 'raw':
+        if isinstance(shared_raw_params, dict):
+            np_dtype = np.dtype(shared_raw_params['dtype'])
+            width = int(shared_raw_params['width'])
+            height = int(shared_raw_params['height'])
+            pixel_spacing_row = float(shared_raw_params['pixel_spacing_row'])
+            pixel_spacing_col = float(shared_raw_params['pixel_spacing_col'])
+
+            try:
+                ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True)
+                if hasattr(ds, 'pixel_array'):
+                    image_array = ds.pixel_array
+                    if show_status:
+                        st.success("✅ RAW file loaded (pixel data extracted from DICOM structure)")
+                else:
+                    arr, endian_used, endian_source = frombuffer_with_endian(
+                        file_bytes,
+                        np_dtype,
+                        default_little_endian=bool(st.session_state.get('raw_little_endian_default', True)),
+                        auto_endian_from_dicom=True,
+                    )
+                    image_array = arr.reshape((height, width))
+                    if show_status:
+                        st.success("✅ RAW file loaded successfully")
+                        st.caption(f"Endian used: {'little' if endian_used else 'big'} ({endian_source})")
+            except Exception:
+                try:
+                    arr, endian_used, endian_source = frombuffer_with_endian(
+                        file_bytes,
+                        np_dtype,
+                        default_little_endian=bool(st.session_state.get('raw_little_endian_default', True)),
+                        auto_endian_from_dicom=True,
+                    )
+                    image_array = arr.reshape((height, width))
+                    if show_status:
+                        st.success("✅ RAW file loaded successfully")
+                        st.caption(f"Endian used: {'little' if endian_used else 'big'} ({endian_source})")
+                except Exception as e:
+                    st.error(f"❌ Failed to load RAW: {e}")
+                    return None, None, None, None
+
+            return image_array, pixel_spacing_row, pixel_spacing_col, filename
+
         # RAW interpretation - but first check if file has DICOM header with metadata
         dicom_metadata_available = False
         dicom_rows = None
@@ -658,7 +914,7 @@ def load_single_image(uploaded_file, file_type, show_status=True):
                 "Pixel Data Type",
                 options=list(dtype_map.keys()),
                 index=0,
-                key=f"dtype_{filename}"
+                key=f"{key_tag}dtype_{filename}"
             )
             np_dtype = dtype_map[dtype_str]
             
@@ -713,7 +969,7 @@ def load_single_image(uploaded_file, file_type, show_status=True):
                     "Image Dimensions (Width x Height)",
                     options=dim_options,
                     index=default_dim_index,
-                    key=f"dims_{filename}"
+                    key=f"{key_tag}dims_{filename}"
                 )
                 
                 width, height = map(int, selected_dim.split(" x "))
@@ -729,7 +985,7 @@ def load_single_image(uploaded_file, file_type, show_status=True):
                 value=default_ps_row,
                 step=0.01,
                 format="%.3f",
-                key=f"ps_row_{filename}",
+                key=f"{key_tag}ps_row_{filename}",
                 help="From ImagerPixelSpacing (0018,1164)" if dicom_ps_row else None
             )
             pixel_spacing_col = st.number_input(
@@ -738,7 +994,7 @@ def load_single_image(uploaded_file, file_type, show_status=True):
                 value=default_ps_col,
                 step=0.01,
                 format="%.3f",
-                key=f"ps_col_{filename}",
+                key=f"{key_tag}ps_col_{filename}",
                 help="From ImagerPixelSpacing (0018,1164)" if dicom_ps_col else None
             )
         
@@ -752,9 +1008,16 @@ def load_single_image(uploaded_file, file_type, show_status=True):
                     st.success("✅ RAW file loaded (pixel data extracted from DICOM structure)")
             else:
                 # True RAW file with no header - read all bytes as pixel data
-                image_array = np.frombuffer(file_bytes, dtype=np_dtype).reshape((height, width))
+                arr, endian_used, endian_source = frombuffer_with_endian(
+                    file_bytes,
+                    np_dtype,
+                    default_little_endian=bool(st.session_state.get('raw_little_endian_default', True)),
+                    auto_endian_from_dicom=True,
+                )
+                image_array = arr.reshape((height, width))
                 if show_status:
                     st.success("✅ RAW file loaded successfully")
+                    st.caption(f"Endian used: {'little' if endian_used else 'big'} ({endian_source})")
         except Exception as e:
             st.error(f"❌ Failed to load RAW: {e}")
             return None, None, None, None

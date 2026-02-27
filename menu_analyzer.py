@@ -266,16 +266,6 @@ def main_app_ui():
     if 'raw_little_endian_default' not in st.session_state:
         st.session_state['raw_little_endian_default'] = True
 
-    with st.sidebar:
-        st.markdown("---")
-        st.subheader("RAW Endian Settings")
-        st.checkbox(
-            "Little-endian (global default)",
-            value=st.session_state['raw_little_endian_default'],
-            key='raw_little_endian_default',
-            help="Applied to RAW/STD parsing app-wide. DICOM Transfer Syntax UID (0002,0010) overrides when available."
-        )
-
     # Always display session state status in the sidebar for debugging
     st.sidebar.markdown("---")
     st.sidebar.subheader("Saved Analysis Data Status")
@@ -318,6 +308,16 @@ def main_app_ui():
             st.sidebar.write("DQE: ⚠️ Need orthogonal MTF")
     else:
         st.sidebar.write("DQE: ⚠️ Need MTF + NPS")
+
+    with st.sidebar:
+        st.markdown("---")
+        st.subheader("RAW Endian Settings")
+        st.checkbox(
+            "Little-endian (global default)",
+            value=st.session_state['raw_little_endian_default'],
+            key='raw_little_endian_default',
+            help="Applied to RAW/STD parsing app-wide. DICOM Transfer Syntax UID (0002,0010) overrides when available."
+        )
     
     st.sidebar.markdown("---")
 

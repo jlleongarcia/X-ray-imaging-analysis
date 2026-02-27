@@ -314,7 +314,6 @@ def main_app_ui():
         st.subheader("RAW Endian Settings")
         st.checkbox(
             "Little-endian (global default)",
-            value=st.session_state['raw_little_endian_default'],
             key='raw_little_endian_default',
             help="Applied to RAW/STD parsing app-wide. DICOM Transfer Syntax UID (0002,0010) overrides when available."
         )

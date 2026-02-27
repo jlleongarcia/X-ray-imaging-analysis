@@ -4,16 +4,9 @@ from pylinac.core.nps import noise_power_spectrum_2d, noise_power_spectrum_1d, r
 import pandas as pd
 import altair as alt
 from typing import List, Optional
-import io
 import time
-try:
-    import pydicom
-except Exception:
-    pydicom = None
-try:
-    from PIL import Image
-except Exception:
-    Image = None
+from analysis_payload import ImagePayload
+from metadata_summary import render_metadata_summary
 
 def _central_roi_mean(image: np.ndarray, roi_size: int) -> float:
     """Compute the mean of a centered square ROI of given size."""
@@ -80,99 +73,6 @@ def _autodetect_kerma_from_detector_conversion(image: np.ndarray, default_kerma:
         pass
     
     return default_kerma
-
-def _try_load_dicom(data: bytes) -> Optional[np.ndarray]:
-    """Attempt to load image data as DICOM.
-    
-    Args:
-        data: Raw file bytes
-    
-    Returns:
-        2D float array if successful, None otherwise
-    """
-    if pydicom is None:
-        return None
-    
-    try:
-        # Check for DICM marker or valid DICOM header
-        is_dicom_like = False
-        if len(data) >= 132 and data[128:132] == b'DICM':
-            is_dicom_like = True
-        else:
-            try:
-                ds_hdr = pydicom.dcmread(io.BytesIO(data), force=True, stop_before_pixels=True)
-                if hasattr(ds_hdr, 'Rows') and hasattr(ds_hdr, 'Columns'):
-                    is_dicom_like = True
-            except Exception:
-                pass
-        
-        if is_dicom_like:
-            ds = pydicom.dcmread(io.BytesIO(data), force=True)
-            if hasattr(ds, 'pixel_array'):
-                arr = ds.pixel_array
-                if isinstance(arr, np.ndarray) and arr.ndim == 3:
-                    arr = np.mean(arr, axis=-1)
-                if isinstance(arr, np.ndarray):
-                    return arr.astype(float)
-    except Exception:
-        pass
-    return None
-
-def _try_load_pil_image(data: bytes) -> Optional[np.ndarray]:
-    """Attempt to load image data using PIL.
-    
-    Args:
-        data: Raw file bytes
-    
-    Returns:
-        2D float array if successful, None otherwise
-    """
-    if Image is None:
-        return None
-    
-    try:
-        img = Image.open(io.BytesIO(data))
-        if img.mode != 'L':
-            img = img.convert('L')
-        return np.array(img, dtype=float)
-    except Exception:
-        return None
-
-def _try_load_raw_std(data: bytes, ext: str, reference_shape: Optional[tuple], 
-                      reference_dtype: Optional[np.dtype], fname: str) -> Optional[np.ndarray]:
-    """Attempt to load RAW/STD file using reference shape and dtype.
-    
-    Args:
-        data: Raw file bytes
-        ext: File extension
-        reference_shape: Expected image shape (H, W)
-        reference_dtype: Expected data type
-        fname: Filename for warning messages
-    
-    Returns:
-        2D float array if successful, None otherwise
-    """
-    if ext not in ('raw', 'std'):
-        return None
-    
-    if not reference_shape or len(reference_shape) != 2 or not reference_dtype:
-        return None
-    
-    expected_pixels = reference_shape[0] * reference_shape[1]
-    itemsize = np.dtype(reference_dtype).itemsize
-    total_bytes = len(data)
-    expected_bytes = expected_pixels * itemsize
-    
-    if total_bytes != expected_bytes:
-        st.warning(f"RAW/STD '{fname}' size mismatch: bytes={total_bytes}, expected={expected_bytes}; skipped.")
-        return None
-    
-    try:
-        arr = np.frombuffer(data, dtype=reference_dtype)
-        return arr.reshape(reference_shape).astype(float)
-    except Exception:
-        return None
-
 
 def _bump_nps_refresh():
     """Callback to force a Streamlit rerun marker when any NPS input changes."""
@@ -258,23 +158,8 @@ def _create_nnps_dataframe(nnps_1d_data: np.ndarray, nnps_x_data: np.ndarray,
     return pd.concat([df_1d, df_x, df_y], ignore_index=True)
 
 
-def _load_uploaded_images(files, reference_shape: Optional[tuple]=None, reference_dtype: Optional[np.dtype]=None) -> List[np.ndarray]:
-    """Load uploaded files into 2D numpy float arrays.
-
-    Priority order:
-      1. DICOM (including pseudo-DICOM .raw/.std with header) via pydicom.
-      2. Standard image formats via PIL -> grayscale.
-      3. True RAW/STD without header: if reference shape & dtype provided AND byte length matches, reshape.
-
-    Parameters
-    ----------
-    files : list
-        Uploaded files from Streamlit uploader.
-    reference_shape : tuple (H, W), optional
-        Shape of the primary image to interpret additional raw/std files.
-    reference_dtype : np.dtype, optional
-        Dtype to assume for additional raw/std files when reshaping.
-    """
+def _load_uploaded_images(files: list[ImagePayload] | None) -> List[np.ndarray]:
+    """Load uploaded payloads into 2D numpy float arrays using centralized decoding only."""
     arrays: List[np.ndarray] = []
 
     for f in files or []:
@@ -284,36 +169,8 @@ def _load_uploaded_images(files, reference_shape: Optional[tuple]=None, referenc
                 arrays.append(arr_preloaded.astype(float))
                 continue
 
-        if isinstance(f, dict):
-            fname = f.get('name', 'unknown') or 'unknown'
-        else:
-            fname = getattr(f, 'name', 'unknown') or 'unknown'
-        ext = fname.lower().rsplit('.', 1)[-1] if '.' in fname else ''
-
-        # Read bytes once
-        try:
-            if isinstance(f, dict):
-                data = f.get('bytes', b'')
-            else:
-                data = f.getvalue() if hasattr(f, 'getvalue') else f.read()
-        except Exception:
-            data = None
-        
-        if not data:
-            st.warning(f"Empty or unreadable file: {fname}")
-            continue
-
-        # Try loading in priority order
-        arr = _try_load_dicom(data)
-        if arr is None:
-            arr = _try_load_pil_image(data)
-        if arr is None:
-            arr = _try_load_raw_std(data, ext, reference_shape, reference_dtype, fname)
-
-        if isinstance(arr, np.ndarray) and arr.ndim == 2 and arr.size > 0:
-            arrays.append(arr)
-        else:
-            st.warning(f"Could not interpret '{fname}' as a 2D image; skipped.")
+        fname = f.get('name', 'unknown') if isinstance(f, dict) else getattr(f, 'name', 'unknown')
+        st.warning(f"Strict ingestion mode: '{fname}' missing pre-decoded image_array; skipped.")
     
     return arrays
 
@@ -571,8 +428,15 @@ def _create_nnps_chart(df_combined: pd.DataFrame, x_label: str, nyquist_freq: fl
 
     return alt.layer(base_chart, selectors, points, text)
 
-def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, preloaded_files=None):
+def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, preloaded_files: list[ImagePayload] | None = None):
     st.subheader("Noise Power Spectrum (NPS) Analysis")
+    render_metadata_summary(
+        image_array,
+        pixel_spacing_row,
+        pixel_spacing_col,
+        domain='pixel',
+        filename='Primary image',
+    )
 
     st.write("""
     **IEC 62220-1-1:2015 Compliant NPS Analysis**
@@ -589,10 +453,8 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     """)
 
     # Load all uploaded images for NPS analysis
-    ref_dtype = image_array.dtype if isinstance(image_array, np.ndarray) else None
-    ref_shape = image_array.shape if isinstance(image_array, np.ndarray) and image_array.ndim == 2 else None
     source_files = preloaded_files
-    additional_arrays = _load_uploaded_images(source_files, reference_shape=ref_shape, reference_dtype=ref_dtype) if source_files else []
+    additional_arrays = _load_uploaded_images(source_files) if source_files else []
 
     # Big ROI size selector in mm (IEC recommends 125 mm; user-adjustable)
     if 'nps_big_roi_mm' not in st.session_state:

@@ -2,9 +2,9 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import altair as alt
-import pydicom
-import io
 import time
+from analysis_payload import ImagePayload
+from metadata_summary import render_metadata_summary
 
 try:
     from pylinac.core.mtf import EdgeMTF
@@ -16,12 +16,6 @@ def _bump_mtf_refresh():
     """Callback to force a Streamlit rerun when MTF inputs change."""
     st.session_state['mtf_refresh'] = st.session_state.get('mtf_refresh', 0) + 1
 
-
-def _file_name_and_bytes(file_obj):
-    """Return (filename, bytes) for Streamlit upload objects or preloaded payload dicts."""
-    if isinstance(file_obj, dict):
-        return file_obj.get('name', 'unknown'), file_obj.get('bytes', b'')
-    return getattr(file_obj, 'name', 'unknown'), file_obj.getvalue()
 
 def _compute_geometric_mean_mtf(mtf_results_list):
     """Compute geometric mean of two orthogonal MTF measurements.
@@ -160,64 +154,6 @@ def calculate_mtf_metrics(edge_roi: np.ndarray, pixel_spacing: float) -> dict:
         return {"MTF_Status": f"Error: {e}"}
 
 
-def _load_image_from_file(uploaded_file):
-    """Helper function to load DICOM image from uploaded file."""
-    filename, file_bytes = _file_name_and_bytes(uploaded_file)
-    
-    # Try DICOM parsing
-    try:
-        ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True)
-        if hasattr(ds, 'pixel_array'):
-            img = ds.pixel_array
-            if img.ndim == 2:
-                return img, filename
-    except Exception:
-        pass
-    
-    return None, filename
-
-
-def _load_raw_file(uploaded_file, dtype, height, width):
-    """Load RAW file with DICOM-aware fallback.
-
-    Priority:
-    1) Try DICOM pixel extraction (handles .raw/.std files with DICOM headers)
-    2) Fallback to true RAW byte reshape using provided dtype/shape
-    """
-    filename, file_bytes = _file_name_and_bytes(uploaded_file)
-    
-    try:
-        # First try DICOM-aware loading (robust for pseudo-RAW files containing headers)
-        try:
-            ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True)
-            if hasattr(ds, 'pixel_array'):
-                img = ds.pixel_array
-                if isinstance(img, np.ndarray) and img.ndim == 2 and img.size > 0:
-                    return img, filename
-        except Exception:
-            pass
-
-        # Fallback: true headerless RAW with user/reference dtype and dimensions
-        np_dtype = np.dtype(dtype)
-        arr = np.frombuffer(file_bytes, dtype=np_dtype)
-        expected_size = height * width
-        expected_bytes = expected_size * np_dtype.itemsize
-        total_bytes = len(file_bytes)
-        
-        if arr.size != expected_size:
-            st.warning(
-                f"⚠️ {filename}: Size mismatch (expected {expected_size} pixels / {expected_bytes} bytes, "
-                f"got {arr.size} pixels / {total_bytes} bytes)"
-            )
-            return None, filename
-        
-        img = arr.reshape((height, width))
-        return img, filename
-    except Exception as e:
-        st.error(f"❌ Failed to load {filename} as RAW: {e}")
-        return None, filename
-
-
 def _create_mtf_chart(df_mtf, mtf_results, has_comparison):
     """Helper function to create MTF chart."""
     max_freq_in_data = df_mtf['Frequency'].max() if len(df_mtf) > 0 else 5
@@ -244,9 +180,16 @@ def _create_mtf_chart(df_mtf, mtf_results, has_comparison):
     return chart.properties(title=title, height=400).interactive()
 
 
-def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, raw_params=None, preloaded_files=None):
+def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, preloaded_files: list[ImagePayload] | None = None):
     """Display the MTF analysis UI with ROI selection and IEC-compliant edge method."""
     st.subheader("Modulation Transfer Function (MTF) Analysis")
+    render_metadata_summary(
+        image_array,
+        pixel_spacing_row,
+        pixel_spacing_col,
+        domain='pixel',
+        filename='Primary image',
+    )
     
     st.markdown("""
     **IEC 62220-1-1:2015 Slanted Edge Method**
@@ -257,62 +200,24 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     comparison_mode = files_for_comparison is not None and len(files_for_comparison) == 2
     
     if comparison_mode:
-        
-        # For RAW files, all files use the same dtype/dimensions
-        if raw_params is not None:
-            images_data = []
+        images_data = []
+        for idx, payload in enumerate(files_for_comparison):
+            if not isinstance(payload, dict):
+                st.error("Strict ingestion mode: expected preloaded payload dictionaries.")
+                return
+            img = payload.get('image_array')
+            fname = payload.get('name', f'Image {idx + 1}')
+            if not isinstance(img, np.ndarray) or img.ndim != 2:
+                st.error(f"Strict ingestion mode: '{fname}' is missing decoded image_array from centralized loader.")
+                return
+            images_data.append((img, fname))
 
-            # Reuse already-loaded primary image from single-image pipeline
-            if image_array is None:
-                st.error("⚠️ First RAW image not loaded.")
-                return
-            first_name = files_for_comparison[0].get('name', 'Image 1') if isinstance(files_for_comparison[0], dict) else files_for_comparison[0].name
-            images_data.append((image_array, first_name))
-
-            # Load remaining RAW file(s) with DICOM-aware fallback
-            for uf in files_for_comparison[1:]:
-                if isinstance(uf, dict) and isinstance(uf.get('image_array'), np.ndarray):
-                    img = uf.get('image_array')
-                    fname = uf.get('name', 'Image')
-                else:
-                    img, fname = _load_raw_file(uf, raw_params['dtype'], raw_params['height'], raw_params['width'])
-                if img is not None:
-                    images_data.append((img, fname))
-                else:
-                    failed_name = uf.get('name', 'image') if isinstance(uf, dict) else uf.name
-                    st.error(f"⚠️ Could not load {failed_name}")
-                    return
-            
-            if len(images_data) == 2:
-                st.success(f"✓ Loaded both RAW files successfully")
-        else:
-            # DICOM files or pre-loaded image_array
-            if image_array is None:
-                st.error("⚠️ First image not loaded.")
-                return
-            
-            first_name = files_for_comparison[0].get('name', 'Image 1') if isinstance(files_for_comparison[0], dict) else files_for_comparison[0].name
-            images_data = [(image_array, first_name)]
-            
-            # Try loading second as DICOM
-            second_payload = files_for_comparison[1]
-            if isinstance(second_payload, dict) and isinstance(second_payload.get('image_array'), np.ndarray):
-                img2, fname2 = second_payload.get('image_array'), second_payload.get('name', 'Image 2')
-            else:
-                img2, fname2 = _load_image_from_file(second_payload)
-            
-            if img2 is not None:
-                images_data.append((img2, fname2))
-                st.success(f"✓ Loaded both images successfully")
-            else:
-                second_name = files_for_comparison[1].get('name', 'Image 2') if isinstance(files_for_comparison[1], dict) else files_for_comparison[1].name
-                st.error(f"⚠️ Could not load second image '{second_name}'")
-                return
-        
         if len(images_data) < 2:
-            st.error("Could not load both images.")
+            st.error("Could not load both images from preloaded payloads.")
             return
-            
+
+        st.success("✓ Loaded both images successfully")
+
         image_arrays = [img for img, _ in images_data]
         filenames = [name for _, name in images_data]
     else:

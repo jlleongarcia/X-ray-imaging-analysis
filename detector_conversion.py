@@ -2,11 +2,11 @@ import streamlit as st
 import numpy as np
 import io
 import csv
-import pandas as pd
 import matplotlib.pyplot as plt
-import statsmodels.api as sm
 from scipy.optimize import least_squares
 from raw_endian import frombuffer_with_endian
+from analysis_payload import ImagePayload, file_name_and_bytes
+from metadata_summary import render_metadata_summary
 
 """
 Detector conversion feature: Upload RAW/STD files, assign kerma values, extract ROI stats,
@@ -304,13 +304,6 @@ def _get_detector_conversion_state() -> dict:
     return state
 
 
-def _file_name_and_bytes(file_obj):
-    """Return (filename, bytes) for Streamlit UploadedFile or preloaded payload dict."""
-    if isinstance(file_obj, dict):
-        return file_obj.get('name', 'unknown'), file_obj.get('bytes', b'')
-    return getattr(file_obj, 'name', 'unknown'), file_obj.getvalue()
-
-
 def _render_cached_fit(cached, title, x_label, y_label):
     """Render a cached fit with formula, R², deviations, and plot."""
     if not (isinstance(cached, dict) and cached.get("coeffs") is not None):
@@ -364,7 +357,7 @@ def _render_cached_fit(cached, title, x_label, y_label):
         ax.grid(True, alpha=0.3)
         st.pyplot(fig)
 
-def display_detector_conversion_section(uploaded_files=None):
+def display_detector_conversion_section(uploaded_files: list[ImagePayload] | None = None):
     st.subheader("Detector conversion: MPV vs Kerma")
     st.write("Assign kerma value to each uploaded RAW/STD file, compute central 100x100 MPV and σ. Use the buttons below to run fits when ready.")
 
@@ -387,11 +380,11 @@ def display_detector_conversion_section(uploaded_files=None):
     kerma_vals, results = [], {"files": []}
     uploaded_exts = []
     for f in uploaded:
-        fname, _ = _file_name_and_bytes(f)
+        fname, _ = file_name_and_bytes(f)
         uploaded_exts.append((fname.split('.')[-1] if '.' in fname else '').lower())
     
-    for f in uploaded:
-        fname, fbytes = _file_name_and_bytes(f)
+    for idx, f in enumerate(uploaded):
+        fname, fbytes = file_name_and_bytes(f)
         col_a, col_b = st.columns(2)
         with col_a:
             kerma_val = st.number_input(f"Kerma (μGy) — {fname}", value=0.0, format="%.4f", key=f"kerma_{fname}")
@@ -406,6 +399,16 @@ def display_detector_conversion_section(uploaded_files=None):
                 little_endian=default_little_endian,
                 auto_endian_from_dicom=True
             )
+            if idx == 0:
+                with st.expander("Image Metadata Summary", expanded=False):
+                    render_metadata_summary(
+                        arr,
+                        None,
+                        None,
+                        domain='pixel',
+                        filename=fname,
+                        title='Metadata',
+                    )
             mpv, sd, roi = _central_roi_stats(arr)
             results["files"].append({
                 "filename": fname, "kerma": float(kerma_val), "ei": float(ei_val),

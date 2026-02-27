@@ -14,11 +14,11 @@ References:
 import streamlit as st
 import numpy as np
 import pandas as pd
-import pydicom
 import matplotlib.pyplot as plt
 from typing import Tuple, List, Dict
 import io
 from scipy.optimize import curve_fit
+from metadata_summary import render_metadata_summary
 
 
 # ================================
@@ -628,6 +628,14 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
         else:
             st.info("No detector conversion function available. Using raw pixel values.")
             image = image_array.astype(np.float64)
+
+        render_metadata_summary(
+            image,
+            pixel_spacing_row,
+            pixel_spacing_col,
+            domain='kerma' if is_kerma_image else 'pixel',
+            filename='Primary image',
+        )
         
         # Process image
         try:

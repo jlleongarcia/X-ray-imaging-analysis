@@ -79,25 +79,24 @@ def display_comparison_tool_section(preloaded_files: list[ImagePayload]):
     image_array_dicom = dicom_file.get('image_array')
     image_array_raw = raw_file.get('image_array')
 
-    with st.expander("Image Metadata Summary", expanded=False):
-        st.markdown("**DICOM input**")
-        render_metadata_summary(
-            image_array_dicom,
-            dicom_file.get('pixel_spacing_row'),
-            dicom_file.get('pixel_spacing_col'),
-            domain='pixel',
-            filename=_file_name(dicom_file),
-            title='Metadata',
-        )
-        st.markdown("---")
-        st.markdown("**RAW input**")
-        render_metadata_summary(
-            image_array_raw,
-            raw_file.get('pixel_spacing_row'),
-            raw_file.get('pixel_spacing_col'),
-            domain='pixel',
-            filename=_file_name(raw_file),
-            title='Metadata',
-        )
+    st.markdown("**DICOM input**")
+    render_metadata_summary(
+        image_array_dicom,
+        dicom_file.get('pixel_spacing_row'),
+        dicom_file.get('pixel_spacing_col'),
+        domain='pixel',
+        filename=_file_name(dicom_file),
+        title='Metadata',
+    )
+    st.markdown("---")
+    st.markdown("**RAW input**")
+    render_metadata_summary(
+        image_array_raw,
+        raw_file.get('pixel_spacing_row'),
+        raw_file.get('pixel_spacing_col'),
+        domain='pixel',
+        filename=_file_name(raw_file),
+        title='Metadata',
+    )
 
     display_array_comparison(image_array_dicom, image_array_raw)

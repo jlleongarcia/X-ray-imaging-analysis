@@ -400,22 +400,20 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
                 auto_endian_from_dicom=True
             )
             if idx == 0:
-                with st.expander("Image Metadata Summary", expanded=False):
-                    render_metadata_summary(
-                        arr,
-                        None,
-                        None,
-                        domain='pixel',
-                        filename=fname,
-                        title='Metadata',
-                    )
+                render_metadata_summary(
+                    arr,
+                    None,
+                    None,
+                    domain='pixel',
+                    filename=fname,
+                    title='Metadata',
+                )
             mpv, sd, roi = _central_roi_stats(arr)
             results["files"].append({
                 "filename": fname, "kerma": float(kerma_val), "ei": float(ei_val),
                 "mpv": float(mpv), "sd": float(sd), "roi": roi
             })
             st.write(f"MPV: {mpv:.3f}, σ: {sd:.3f}")
-            st.caption(f"Endian used: {'little' if endian_used else 'big'} ({endian_source})")
         except Exception as e:
             st.error(f"Failed to process {fname}: {e}")
             return None

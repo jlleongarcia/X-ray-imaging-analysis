@@ -677,19 +677,19 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
             return
 
         # Same image preview tool used by other APIs
-        with st.expander("🖼️ Image Preview", expanded=False):
-            render_metadata_summary(
-                ref_image,
-                ref_ps_row,
-                ref_ps_col,
-                domain='pixel',
-                filename=ref_name,
-                title='🖼️ Image Metadata Summary',
-            )
+        st.markdown("### 🖼️ Image Preview")
+        render_metadata_summary(
+            ref_image,
+            ref_ps_row,
+            ref_ps_col,
+            domain='pixel',
+            filename=ref_name,
+            title='🖼️ Image Metadata Summary',
+        )
 
-            # Normalize for display
-            img_display = (ref_image - ref_image.min()) / (ref_image.max() - ref_image.min())
-            st.image(img_display, caption=f"Preview: {ref_name}", use_container_width=True)
+        # Normalize for display
+        img_display = (ref_image - ref_image.min()) / (ref_image.max() - ref_image.min())
+        st.image(img_display, caption=f"Preview: {ref_name}", use_container_width=True)
         
         st.markdown("---")
         detector_results = display_detector_conversion_section(uploaded_files=raw_payloads)
@@ -725,20 +725,20 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
         st.error("❌ Failed to load image. Please check the file format and parameters.")
         return
     
-    # Image preview in expander
-    with st.expander("🖼️ Image Preview", expanded=False):
-        render_metadata_summary(
-            image_array,
-            pixel_spacing_row,
-            pixel_spacing_col,
-            domain='pixel',
-            filename=dicom_filename,
-            title='🖼️ Image Metadata Summary',
-        )
-        
-        # Normalize for display
-        img_display = (image_array - image_array.min()) / (image_array.max() - image_array.min())
-        st.image(img_display, caption=f"Preview: {dicom_filename}", use_container_width=True)
+    # Image preview
+    st.markdown("### 🖼️ Image Preview")
+    render_metadata_summary(
+        image_array,
+        pixel_spacing_row,
+        pixel_spacing_col,
+        domain='pixel',
+        filename=dicom_filename,
+        title='🖼️ Image Metadata Summary',
+    )
+    
+    # Normalize for display
+    img_display = (image_array - image_array.min()) / (image_array.max() - image_array.min())
+    st.image(img_display, caption=f"Preview: {dicom_filename}", use_container_width=True)
      
     # Route to specific analysis
     st.markdown("---")
@@ -843,7 +843,6 @@ def load_single_image(uploaded_file, file_type, show_status=True, shared_raw_par
                 image_array = arr.reshape((height, width))
                 if show_status:
                     st.success("✅ RAW file loaded successfully")
-                    st.caption(f"Endian used: {'little' if endian_used else 'big'} ({endian_source})")
         except Exception:
             try:
                 arr, endian_used, endian_source = frombuffer_with_endian(
@@ -855,7 +854,6 @@ def load_single_image(uploaded_file, file_type, show_status=True, shared_raw_par
                 image_array = arr.reshape((height, width))
                 if show_status:
                     st.success("✅ RAW file loaded successfully")
-                    st.caption(f"Endian used: {'little' if endian_used else 'big'} ({endian_source})")
             except Exception as e:
                 st.error(f"❌ Failed to load RAW: {e}")
                 return None, None, None, None

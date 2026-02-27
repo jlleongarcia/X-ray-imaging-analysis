@@ -1,6 +1,5 @@
 import numpy as np
 import streamlit as st
-from metadata_summary import render_metadata_summary
 
 def _calculate_uniformity_term(val_i, val_mean):
     """
@@ -351,13 +350,6 @@ def display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_sp
     # It assumes image_array, pixel_spacing_row, and pixel_spacing_col are already available.
 
     st.subheader("Uniformity Analysis")
-    render_metadata_summary(
-        image_array,
-        pixel_spacing_row,
-        pixel_spacing_col,
-        domain='pixel',
-        filename='Primary image',
-    )
 
     if pixel_spacing_row is not None and pixel_spacing_col is not None:
         if st.button("Run Uniformity Analysis"):

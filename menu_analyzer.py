@@ -5,7 +5,6 @@ import os
 import io
 from raw_endian import frombuffer_with_endian
 from analysis_payload import ImagePayload, file_name_and_bytes
-from metadata_summary import render_metadata_summary
 
 # Import functions from your analysis modules
 from uniformity import display_uniformity_analysis_section
@@ -121,6 +120,28 @@ def _build_shared_raw_params(raw_payloads, context_key=""):
 
         total_pixels = full_pixels
 
+        default_ps_row = dicom_ps_row if dicom_ps_row else 0.1
+        default_ps_col = dicom_ps_col if dicom_ps_col else 0.1
+
+        pixel_spacing_row = st.number_input(
+            "Pixel Spacing Row (mm/px)",
+            min_value=0.001,
+            value=default_ps_row,
+            step=0.01,
+            format="%.3f",
+            key=f"{context_key}ps_row_shared",
+            help="From ImagerPixelSpacing (0018,1164)" if dicom_ps_row else None
+        )
+        pixel_spacing_col = st.number_input(
+            "Pixel Spacing Col (mm/px)",
+            min_value=0.001,
+            value=default_ps_col,
+            step=0.01,
+            format="%.3f",
+            key=f"{context_key}ps_col_shared",
+            help="From ImagerPixelSpacing (0018,1164)" if dicom_ps_col else None
+        )
+
         if dicom_rows and dicom_cols:
             auto_width = int(dicom_cols)
             auto_height = int(dicom_rows)
@@ -199,50 +220,36 @@ def _build_shared_raw_params(raw_payloads, context_key=""):
         else:
             st.success("Selected dimensions exactly match file size")
 
-        extra_bytes_location_ui = st.selectbox(
-            "Extra bytes location",
-            options=["Header (skip first bytes)", "Trailer (skip last bytes)"],
-            index=0,
-            key=f"{context_key}extra_bytes_location_shared",
-            help="Choose whether extra bytes are a header (prefix) or trailer (suffix)."
-        )
-        extra_bytes_location = 'start' if extra_bytes_location_ui.startswith("Header") else 'end'
+        if manual_dims:
+            if extra_bytes > 0:
+                extra_bytes_location_ui = st.selectbox(
+                    "Extra bytes location",
+                    options=["Header (skip first bytes)", "Trailer (skip last bytes)"],
+                    index=0,
+                    key=f"{context_key}extra_bytes_location_shared",
+                    help="Choose whether extra bytes are a header (prefix) or trailer (suffix)."
+                )
+                extra_bytes_location = 'start' if extra_bytes_location_ui.startswith("Header") else 'end'
 
-        skip_extra_bytes = int(st.number_input(
-            "Bytes to skip",
-            min_value=0,
-            max_value=int(extra_bytes),
-            value=int(extra_bytes),
-            step=int(itemsize),
-            key=f"{context_key}skip_extra_bytes_shared",
-            help="Usually set to all extra bytes; keep default unless format details say otherwise."
-        ))
+                skip_extra_bytes = int(st.number_input(
+                    "Bytes to skip",
+                    min_value=0,
+                    max_value=int(extra_bytes),
+                    value=int(extra_bytes),
+                    step=int(itemsize),
+                    key=f"{context_key}skip_extra_bytes_shared",
+                    help="Usually set to all extra bytes; keep default unless format details say otherwise."
+                ))
+            else:
+                extra_bytes_location = 'start'
+                skip_extra_bytes = 0
+        else:
+            extra_bytes_location = 'start'
+            skip_extra_bytes = 0
 
         if skip_extra_bytes % itemsize != 0:
             st.error(f"Bytes to skip ({skip_extra_bytes}) must be a multiple of pixel size ({itemsize})")
             return None
-
-        default_ps_row = dicom_ps_row if dicom_ps_row else 0.1
-        default_ps_col = dicom_ps_col if dicom_ps_col else 0.1
-
-        pixel_spacing_row = st.number_input(
-            "Pixel Spacing Row (mm/px)",
-            min_value=0.001,
-            value=default_ps_row,
-            step=0.01,
-            format="%.3f",
-            key=f"{context_key}ps_row_shared",
-            help="From ImagerPixelSpacing (0018,1164)" if dicom_ps_row else None
-        )
-        pixel_spacing_col = st.number_input(
-            "Pixel Spacing Col (mm/px)",
-            min_value=0.001,
-            value=default_ps_col,
-            step=0.01,
-            format="%.3f",
-            key=f"{context_key}ps_col_shared",
-            help="From ImagerPixelSpacing (0018,1164)" if dicom_ps_col else None
-        )
 
     return {
         'dtype': np_dtype,
@@ -683,21 +690,13 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
         
         if image_array is not None:
             st.markdown("---")
-            render_metadata_summary(
-                image_array,
-                pixel_spacing_row,
-                pixel_spacing_col,
-                domain='pixel',
-                filename=dicom_filename,
-                title='🖼️ Image Metadata Summary',
-            )
-            
             # Show image preview
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                # Normalize for display
-                img_display = (image_array - image_array.min()) / (image_array.max() - image_array.min())
-                st.image(img_display, caption="Image Preview", use_container_width=True)
+            with st.expander("🖼️ Image Preview", expanded=False):
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    # Normalize for display
+                    img_display = (image_array - image_array.min()) / (image_array.max() - image_array.min())
+                    st.image(img_display, caption="Image Preview", use_container_width=True)
             
             st.markdown("---")
             st.subheader("🏥 Generate DICOM File")
@@ -746,19 +745,10 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
             return
 
         # Same image preview tool used by other APIs
-        st.markdown("### 🖼️ Image Preview")
-        render_metadata_summary(
-            ref_image,
-            ref_ps_row,
-            ref_ps_col,
-            domain='pixel',
-            filename=ref_name,
-            title='🖼️ Image Metadata Summary',
-        )
-
-        # Normalize for display
-        img_display = (ref_image - ref_image.min()) / (ref_image.max() - ref_image.min())
-        st.image(img_display, caption=f"Preview: {ref_name}", use_container_width=True)
+        with st.expander("🖼️ Image Preview", expanded=False):
+            # Normalize for display
+            img_display = (ref_image - ref_image.min()) / (ref_image.max() - ref_image.min())
+            st.image(img_display, caption=f"Preview: {ref_name}", use_container_width=True)
         
         st.markdown("---")
         detector_results = display_detector_conversion_section(uploaded_files=raw_payloads)
@@ -795,19 +785,10 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
         return
     
     # Image preview
-    st.markdown("### 🖼️ Image Preview")
-    render_metadata_summary(
-        image_array,
-        pixel_spacing_row,
-        pixel_spacing_col,
-        domain='pixel',
-        filename=dicom_filename,
-        title='🖼️ Image Metadata Summary',
-    )
-    
-    # Normalize for display
-    img_display = (image_array - image_array.min()) / (image_array.max() - image_array.min())
-    st.image(img_display, caption=f"Preview: {dicom_filename}", use_container_width=True)
+    with st.expander("🖼️ Image Preview", expanded=False):
+        # Normalize for display
+        img_display = (image_array - image_array.min()) / (image_array.max() - image_array.min())
+        st.image(img_display, caption=f"Preview: {dicom_filename}", use_container_width=True)
      
     # Route to specific analysis
     st.markdown("---")

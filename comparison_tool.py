@@ -2,7 +2,6 @@ import streamlit as st
 import numpy as np
 import os
 from analysis_payload import ImagePayload, file_name_and_bytes
-from metadata_summary import render_metadata_summary
 
 # Note: dicom_utils removed. Use pydicom.pixel_array (stored values) directly.
 
@@ -80,23 +79,7 @@ def display_comparison_tool_section(preloaded_files: list[ImagePayload]):
     image_array_raw = raw_file.get('image_array')
 
     st.markdown("**DICOM input**")
-    render_metadata_summary(
-        image_array_dicom,
-        dicom_file.get('pixel_spacing_row'),
-        dicom_file.get('pixel_spacing_col'),
-        domain='pixel',
-        filename=_file_name(dicom_file),
-        title='Metadata',
-    )
     st.markdown("---")
     st.markdown("**RAW input**")
-    render_metadata_summary(
-        image_array_raw,
-        raw_file.get('pixel_spacing_row'),
-        raw_file.get('pixel_spacing_col'),
-        domain='pixel',
-        filename=_file_name(raw_file),
-        title='Metadata',
-    )
 
     display_array_comparison(image_array_dicom, image_array_raw)

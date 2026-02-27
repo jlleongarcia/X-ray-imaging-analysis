@@ -6,7 +6,6 @@ import altair as alt
 from typing import List, Optional
 import time
 from analysis_payload import ImagePayload
-from metadata_summary import render_metadata_summary
 
 def _central_roi_mean(image: np.ndarray, roi_size: int) -> float:
     """Compute the mean of a centered square ROI of given size."""
@@ -430,13 +429,6 @@ def _create_nnps_chart(df_combined: pd.DataFrame, x_label: str, nyquist_freq: fl
 
 def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, preloaded_files: list[ImagePayload] | None = None):
     st.subheader("Noise Power Spectrum (NPS) Analysis")
-    render_metadata_summary(
-        image_array,
-        pixel_spacing_row,
-        pixel_spacing_col,
-        domain='pixel',
-        filename='Primary image',
-    )
 
     st.write("""
     **IEC 62220-1-1:2015 Compliant NPS Analysis**

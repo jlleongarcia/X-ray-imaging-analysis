@@ -4,7 +4,6 @@ import pandas as pd
 import altair as alt
 import time
 from analysis_payload import ImagePayload
-from metadata_summary import render_metadata_summary
 
 try:
     from pylinac.core.mtf import EdgeMTF
@@ -183,13 +182,6 @@ def _create_mtf_chart(df_mtf, mtf_results, has_comparison):
 def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col, preloaded_files: list[ImagePayload] | None = None):
     """Display the MTF analysis UI with ROI selection and IEC-compliant edge method."""
     st.subheader("Modulation Transfer Function (MTF) Analysis")
-    render_metadata_summary(
-        image_array,
-        pixel_spacing_row,
-        pixel_spacing_col,
-        domain='pixel',
-        filename='Primary image',
-    )
     
     st.markdown("""
     **IEC 62220-1-1:2015 Slanted Edge Method**

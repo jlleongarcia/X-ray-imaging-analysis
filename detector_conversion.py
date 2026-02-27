@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 from scipy.optimize import least_squares
 from raw_endian import frombuffer_with_endian
 from analysis_payload import ImagePayload, file_name_and_bytes
-from metadata_summary import render_metadata_summary
 
 """
 Detector conversion feature: Upload RAW/STD files, assign kerma values, extract ROI stats,
@@ -399,15 +398,6 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
                 little_endian=default_little_endian,
                 auto_endian_from_dicom=True
             )
-            if idx == 0:
-                render_metadata_summary(
-                    arr,
-                    None,
-                    None,
-                    domain='pixel',
-                    filename=fname,
-                    title='Metadata',
-                )
             mpv, sd, roi = _central_roi_stats(arr)
             results["files"].append({
                 "filename": fname, "kerma": float(kerma_val), "ei": float(ei_val),

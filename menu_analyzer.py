@@ -107,17 +107,25 @@ def _build_shared_raw_params(raw_payloads, context_key=""):
         itemsize = np.dtype(np_dtype).itemsize
         file_size = len(ref_bytes)
 
-        if file_size % itemsize != 0:
-            st.error(f"File size ({file_size} bytes) is not a multiple of pixel size ({itemsize} bytes)")
+        if file_size < itemsize:
+            st.error(f"File size ({file_size} bytes) is too small for pixel size ({itemsize} bytes)")
             return None
 
-        total_pixels = file_size // itemsize
+        full_pixels = file_size // itemsize
+        remainder_bytes = file_size % itemsize
+        if remainder_bytes:
+            st.warning(
+                f"File has {remainder_bytes} trailing byte(s) not aligned with pixel size; "
+                f"they are excluded from auto-dimension candidates."
+            )
+
+        total_pixels = full_pixels
 
         if dicom_rows and dicom_cols:
-            width = int(dicom_cols)
-            height = int(dicom_rows)
+            auto_width = int(dicom_cols)
+            auto_height = int(dicom_rows)
             st.write("**Dimensions (from DICOM tags):**")
-            st.write(f"{width} × {height} pixels")
+            st.write(f"{auto_width} × {auto_height} pixels")
             st.caption("Using Rows (0028,0010) and Columns (0028,0011) tags")
         else:
             def get_factors(n):
@@ -152,8 +160,67 @@ def _build_shared_raw_params(raw_payloads, context_key=""):
                 key=f"{context_key}dims_shared"
             )
 
-            width, height = map(int, selected_dim.split(" x "))
-            st.caption(f"Selected: **{width} x {height}** pixels ({width * height:,} total)")
+            auto_width, auto_height = map(int, selected_dim.split(" x "))
+            st.caption(f"Auto-detected: **{auto_width} x {auto_height}** pixels ({auto_width * auto_height:,} total)")
+
+        manual_dims = st.checkbox(
+            "Manually override dimensions",
+            value=False,
+            key=f"{context_key}manual_dims_shared",
+            help="Enable to set width/height manually instead of using auto-detected values."
+        )
+
+        if manual_dims:
+            width = int(st.number_input(
+                "Manual width (px)",
+                min_value=1,
+                value=int(auto_width),
+                step=1,
+                key=f"{context_key}manual_width_shared",
+            ))
+            height = int(st.number_input(
+                "Manual height (px)",
+                min_value=1,
+                value=int(auto_height),
+                step=1,
+                key=f"{context_key}manual_height_shared",
+            ))
+        else:
+            width, height = int(auto_width), int(auto_height)
+
+        expected_bytes = int(width) * int(height) * itemsize
+        if expected_bytes > file_size:
+            st.error(f"Selected dimensions require {expected_bytes:,} bytes, but file has {file_size:,} bytes")
+            return None
+
+        extra_bytes = file_size - expected_bytes
+        if extra_bytes > 0:
+            st.warning(f"Detected {extra_bytes:,} extra byte(s) beyond selected image size")
+        else:
+            st.success("Selected dimensions exactly match file size")
+
+        extra_bytes_location_ui = st.selectbox(
+            "Extra bytes location",
+            options=["Header (skip first bytes)", "Trailer (skip last bytes)"],
+            index=0,
+            key=f"{context_key}extra_bytes_location_shared",
+            help="Choose whether extra bytes are a header (prefix) or trailer (suffix)."
+        )
+        extra_bytes_location = 'start' if extra_bytes_location_ui.startswith("Header") else 'end'
+
+        skip_extra_bytes = int(st.number_input(
+            "Bytes to skip",
+            min_value=0,
+            max_value=int(extra_bytes),
+            value=int(extra_bytes),
+            step=int(itemsize),
+            key=f"{context_key}skip_extra_bytes_shared",
+            help="Usually set to all extra bytes; keep default unless format details say otherwise."
+        ))
+
+        if skip_extra_bytes % itemsize != 0:
+            st.error(f"Bytes to skip ({skip_extra_bytes}) must be a multiple of pixel size ({itemsize})")
+            return None
 
         default_ps_row = dicom_ps_row if dicom_ps_row else 0.1
         default_ps_col = dicom_ps_col if dicom_ps_col else 0.1
@@ -181,6 +248,8 @@ def _build_shared_raw_params(raw_payloads, context_key=""):
         'dtype': np_dtype,
         'width': int(width),
         'height': int(height),
+        'skip_extra_bytes': int(skip_extra_bytes),
+        'extra_bytes_location': extra_bytes_location,
         'pixel_spacing_row': float(pixel_spacing_row),
         'pixel_spacing_col': float(pixel_spacing_col),
     }
@@ -824,34 +893,68 @@ def load_single_image(uploaded_file, file_type, show_status=True, shared_raw_par
         np_dtype = np.dtype(shared_raw_params['dtype'])
         width = int(shared_raw_params['width'])
         height = int(shared_raw_params['height'])
+        skip_extra_bytes = int(shared_raw_params.get('skip_extra_bytes', 0))
+        extra_bytes_location = str(shared_raw_params.get('extra_bytes_location', 'start'))
         pixel_spacing_row = float(shared_raw_params['pixel_spacing_row'])
         pixel_spacing_col = float(shared_raw_params['pixel_spacing_col'])
 
+        expected_bytes = width * height * np_dtype.itemsize
+        file_size = len(file_bytes)
+        available_extra_bytes = file_size - expected_bytes
+        if available_extra_bytes < 0:
+            st.error(f"❌ File too small: requires {expected_bytes:,} bytes, found {file_size:,}")
+            return None, None, None, None
+
+        if skip_extra_bytes < 0 or skip_extra_bytes > available_extra_bytes:
+            st.error(
+                f"❌ Invalid bytes-to-skip ({skip_extra_bytes}); allowed range is 0..{available_extra_bytes}"
+            )
+            return None, None, None, None
+
+        if skip_extra_bytes % np_dtype.itemsize != 0:
+            st.error(
+                f"❌ Bytes to skip ({skip_extra_bytes}) must be multiple of pixel size ({np_dtype.itemsize})"
+            )
+            return None, None, None, None
+
+        if extra_bytes_location == 'end':
+            parse_bytes = file_bytes[:file_size - skip_extra_bytes]
+        else:
+            parse_bytes = file_bytes[skip_extra_bytes:]
+
+        try_dicom_decode = (skip_extra_bytes == 0 and extra_bytes_location == 'start')
+
         try:
-            ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True)
-            if hasattr(ds, 'pixel_array'):
+            ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True) if try_dicom_decode else None
+            if ds is not None and hasattr(ds, 'pixel_array'):
                 image_array = ds.pixel_array
                 if show_status:
                     st.success("✅ RAW file loaded (pixel data extracted from DICOM structure)")
             else:
                 arr, endian_used, endian_source = frombuffer_with_endian(
-                    file_bytes,
+                    parse_bytes,
                     np_dtype,
                     default_little_endian=bool(st.session_state.get('raw_little_endian_default', True)),
                     auto_endian_from_dicom=True,
                 )
-                image_array = arr.reshape((height, width))
+                needed_pixels = width * height
+                if arr.size < needed_pixels:
+                    raise ValueError(f"Decoded pixels ({arr.size}) are fewer than required ({needed_pixels})")
+                image_array = arr[:needed_pixels].reshape((height, width))
                 if show_status:
                     st.success("✅ RAW file loaded successfully")
         except Exception:
             try:
                 arr, endian_used, endian_source = frombuffer_with_endian(
-                    file_bytes,
+                    parse_bytes,
                     np_dtype,
                     default_little_endian=bool(st.session_state.get('raw_little_endian_default', True)),
                     auto_endian_from_dicom=True,
                 )
-                image_array = arr.reshape((height, width))
+                needed_pixels = width * height
+                if arr.size < needed_pixels:
+                    raise ValueError(f"Decoded pixels ({arr.size}) are fewer than required ({needed_pixels})")
+                image_array = arr[:needed_pixels].reshape((height, width))
                 if show_status:
                     st.success("✅ RAW file loaded successfully")
             except Exception as e:

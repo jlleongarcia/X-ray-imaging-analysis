@@ -798,6 +798,8 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
     
     elif test_name == "MTF (Sharpness)":
         # Pass uploaded files to enable MTF comparison mode when 2 images are uploaded
+        for idx, p in enumerate(preloaded_payloads):
+            _ensure_payload_loaded(p, show_status=False)
         display_mtf_analysis_section(
             image_array,
             pixel_spacing_row,

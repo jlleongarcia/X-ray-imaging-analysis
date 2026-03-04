@@ -3,6 +3,7 @@ import numpy as np
 import io
 import csv
 import matplotlib.pyplot as plt
+import pydicom
 from scipy.optimize import least_squares
 from raw_endian import frombuffer_with_endian
 from analysis_payload import ImagePayload, file_name_and_bytes
@@ -29,6 +30,134 @@ def _read_raw_as_square(raw_bytes, dtype, little_endian=True, auto_endian_from_d
     if side < 100:
         raise ValueError(f"Inferred square size {side} < 100; cannot extract 100x100 ROI")
     return pixels[:side*side].reshape((side, side)), endian_used, endian_source
+
+
+def _extract_dicom_header_hints(file_bytes):
+    """Extract optional DICOM header hints from RAW/STD files when present.
+
+    Returns:
+        dict with keys:
+            - pixel_intensity_relationship_raw: str | None
+            - pixel_intensity_relationship_fit_method: 'linear' | 'log' | None
+            - relative_xray_exposure: float | None
+            - pixel_data_dtype_hint: 'uint8' | 'uint16' | 'float32' | None
+            - pixel_data_dtype_source: str | None
+    """
+    hints = {
+        "pixel_intensity_relationship_raw": None,
+        "pixel_intensity_relationship_fit_method": None,
+        "relative_xray_exposure": None,
+        "pixel_data_dtype_hint": None,
+        "pixel_data_dtype_source": None,
+    }
+
+    try:
+        ds = pydicom.dcmread(io.BytesIO(file_bytes), force=True, stop_before_pixels=True)
+    except Exception:
+        return hints
+
+    pir = getattr(ds, "PixelIntensityRelationship", None)
+    if pir is not None:
+        pir_str = str(pir).strip().upper()
+        if pir_str:
+            hints["pixel_intensity_relationship_raw"] = pir_str
+            if "LOG" in pir_str:
+                hints["pixel_intensity_relationship_fit_method"] = "log"
+            elif "LIN" in pir_str:
+                hints["pixel_intensity_relationship_fit_method"] = "linear"
+
+    rel_xray_exp = getattr(ds, "RelativeXRayExposure", None)
+    if rel_xray_exp is not None:
+        try:
+            hints["relative_xray_exposure"] = float(rel_xray_exp)
+        except (TypeError, ValueError):
+            pass
+
+    # Pixel dtype hint from Pixel Data (7FE0,0010) and associated tags.
+    # Use a second parse with deferred large values so we can detect Pixel Data tag presence.
+    try:
+        ds_full = pydicom.dcmread(
+            io.BytesIO(file_bytes),
+            force=True,
+            stop_before_pixels=False,
+            defer_size="1 KB",
+        )
+        pixel_data_elem = ds_full.get((0x7FE0, 0x0010))
+        if pixel_data_elem is not None:
+            has_float_pixel_data = ds_full.get((0x7FE0, 0x0008)) is not None
+            has_double_float_pixel_data = ds_full.get((0x7FE0, 0x0009)) is not None
+            bits_allocated = getattr(ds_full, "BitsAllocated", None)
+            if bits_allocated is not None:
+                try:
+                    bits_allocated = int(bits_allocated)
+                except (TypeError, ValueError):
+                    bits_allocated = None
+
+            if bits_allocated == 8:
+                hints["pixel_data_dtype_hint"] = "uint8"
+                hints["pixel_data_dtype_source"] = "Pixel Data + BitsAllocated=8"
+            elif bits_allocated == 16:
+                hints["pixel_data_dtype_hint"] = "uint16"
+                hints["pixel_data_dtype_source"] = "Pixel Data + BitsAllocated=16"
+            elif bits_allocated == 32:
+                if has_float_pixel_data or has_double_float_pixel_data:
+                    hints["pixel_data_dtype_hint"] = "float32"
+                    hints["pixel_data_dtype_source"] = "Float Pixel Data + BitsAllocated=32"
+            else:
+                vr = str(getattr(pixel_data_elem, "VR", "")).upper()
+                if vr == "OB":
+                    hints["pixel_data_dtype_hint"] = "uint8"
+                    hints["pixel_data_dtype_source"] = "Pixel Data VR=OB"
+                elif vr == "OW":
+                    hints["pixel_data_dtype_hint"] = "uint16"
+                    hints["pixel_data_dtype_source"] = "Pixel Data VR=OW"
+                elif vr == "OF":
+                    hints["pixel_data_dtype_hint"] = "float32"
+                    hints["pixel_data_dtype_source"] = "Pixel Data VR=OF"
+    except Exception:
+        pass
+
+    return hints
+
+
+def _select_default_dtype_from_pixel_data(per_file_dtype_hints, fallback_dtype):
+    """Choose default dtype from Pixel Data hints.
+
+    Uses Pixel Data hint first when present and consistent; otherwise fallback.
+    """
+    valid_hints = [d for d in per_file_dtype_hints if d in {"uint8", "uint16", "float32"}]
+    if not valid_hints:
+        return fallback_dtype
+
+    unique_hints = sorted(set(valid_hints))
+    if len(unique_hints) == 1:
+        return unique_hints[0]
+
+    st.warning(
+        "Conflicting Pixel Data dtype hints detected across files. "
+        f"Using fallback default dtype: {fallback_dtype}."
+    )
+    return fallback_dtype
+
+
+def _select_default_fit_method_from_pir(per_file_fit_hints, fallback_method):
+    """Choose default fit method from Pixel Intensity Relationship hints.
+
+    Uses PIR first when present and consistent; otherwise falls back to existing logic.
+    """
+    valid_hints = [m for m in per_file_fit_hints if m in {"linear", "log"}]
+    if not valid_hints:
+        return fallback_method
+
+    unique_hints = sorted(set(valid_hints))
+    if len(unique_hints) == 1:
+        return unique_hints[0]
+
+    st.warning(
+        "Conflicting Pixel Intensity Relationship values detected across files. "
+        f"Using fallback default fit method: {fallback_method}."
+    )
+    return fallback_method
 
 
 def _central_roi_stats(img_array, roi_h=100, roi_w=100):
@@ -358,7 +487,6 @@ def _render_cached_fit(cached, title, x_label, y_label):
 
 def display_detector_conversion_section(uploaded_files: list[ImagePayload] | None = None):
     st.subheader("Detector conversion: MPV vs Kerma")
-    st.write("Assign kerma value to each uploaded RAW/STD file, compute central 100x100 MPV and σ. Use the buttons below to run fits when ready.")
 
     uploaded = uploaded_files if uploaded_files else st.file_uploader(
         "Upload RAW or STD files", type=["raw", "RAW", "std", "STD"], accept_multiple_files=True
@@ -369,26 +497,51 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
 
     dc_state = _get_detector_conversion_state()
 
+    file_header_hints = []
+    uploaded_exts = []
+    for f in uploaded:
+        fname, fbytes = file_name_and_bytes(f)
+        uploaded_exts.append((fname.split('.')[-1] if '.' in fname else '').lower())
+        file_header_hints.append(_extract_dicom_header_hints(fbytes))
+
     dtype_map = {"uint8": np.uint8, "uint16": np.uint16, "float32": np.float32}
-    dtype_str = st.selectbox("Pixel dtype", options=list(dtype_map.keys()), index=1)
+    fallback_dtype = "uint16"
+    dtype_hints = [h.get("pixel_data_dtype_hint") for h in file_header_hints]
+    default_dtype = _select_default_dtype_from_pixel_data(dtype_hints, fallback_dtype)
+
+    detected_dtype_sources = sorted({h.get("pixel_data_dtype_source") for h in file_header_hints if h.get("pixel_data_dtype_source")})
+    if detected_dtype_sources:
+        st.caption(
+            "Pixel dtype auto-preset from DICOM Pixel Data (7FE0,0010): "
+            + ", ".join(detected_dtype_sources)
+        )
+
+    dtype_str = st.selectbox(
+        "Pixel dtype",
+        options=list(dtype_map.keys()),
+        index=list(dtype_map.keys()).index(default_dtype)
+    )
     dtype = dtype_map[dtype_str]
     default_little_endian = bool(st.session_state.get("raw_little_endian_default", True))
 
     st.markdown("---")
-    st.write("Enter kerma and EI values for each file")
+    st.write("Enter kerma values for each file. EI values might be auto-populated from file metadata when available, but can be edited as needed. After entering values, use the buttons below to run fits and analyze results.")
     kerma_vals, results = [], {"files": []}
-    uploaded_exts = []
-    for f in uploaded:
-        fname, _ = file_name_and_bytes(f)
-        uploaded_exts.append((fname.split('.')[-1] if '.' in fname else '').lower())
     
     for idx, f in enumerate(uploaded):
         fname, fbytes = file_name_and_bytes(f)
+        metadata_hints = file_header_hints[idx] if idx < len(file_header_hints) else {}
+        ei_default = float(metadata_hints.get("relative_xray_exposure") or 0.0)
         col_a, col_b = st.columns(2)
         with col_a:
             kerma_val = st.number_input(f"Kerma (μGy) — {fname}", value=0.0, format="%.4f", key=f"kerma_{fname}")
         with col_b:
-            ei_val = st.number_input(f"Exposition Index (EI) — {fname}", value=0.0, format="%.2f", key=f"ei_{fname}")
+            ei_val = st.number_input(
+                f"Exposition Index (EI) — {fname}",
+                value=ei_default,
+                format="%.2f",
+                key=f"ei_{fname}"
+            )
         kerma_vals.append(kerma_val)
         
         try:
@@ -413,8 +566,19 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
     st.write("### Detector Response Curve")
     
     all_std = len(uploaded_exts) > 0 and all(ext == 'std' for ext in uploaded_exts)
+    fallback_fit_method = 'log' if all_std else 'linear'
+    pir_fit_hints = [h.get("pixel_intensity_relationship_fit_method") for h in file_header_hints]
+    default_fit_method = _select_default_fit_method_from_pir(pir_fit_hints, fallback_fit_method)
+
+    detected_pir_values = sorted({h.get("pixel_intensity_relationship_raw") for h in file_header_hints if h.get("pixel_intensity_relationship_raw")})
+    if detected_pir_values:
+        st.caption(
+            "Detected Pixel Intensity Relationship (0028,1040): "
+            + ", ".join(detected_pir_values)
+        )
+
     fit_method = st.selectbox(
-        "Fit method", options=['linear', 'log', 'poly'], index=1 if all_std else 0,
+        "Fit method", options=['linear', 'log', 'poly'], index=['linear', 'log', 'poly'].index(default_fit_method),
         help="RAW defaults to linear; STD defaults to log. EI vs Kerma is always linear.",
         key="fit_method_detector_curve"
     )

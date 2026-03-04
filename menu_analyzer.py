@@ -410,7 +410,7 @@ def main_app_ui():
                     "files_needed": "3+ RAW images at different exposures",
                     "file_types": "RAW/STD files only",
                     "requirements": ["Multiple RAW files", "Different exposure levels", "Same detector settings"],
-                    "computation": "Uses least-squares fitting to establish: $MPV = f(K_{air})$ and $EI = f(K_{air})$. Enables conversion from detector units to air kerma for subsequent analyses.\n\n Provides detailed noise components analysis by Weighted Robust Linear Models to separate quantum noise, electronic noise, and structural noise. Forces parameters to be non-negative.",
+                    "computation": "Assign kerma value to each uploaded RAW/STD file, compute central 100x100 MPV and σ.\n\n Uses least-squares fitting to establish: $MPV = f(K_{air})$ and $EI = f(K_{air})$. Enables conversion from detector units to air kerma for subsequent analyses.\n\n Provides detailed noise components analysis by Weighted Robust Linear Models to separate quantum noise, electronic noise, and structural noise. Forces parameters to be non-negative.",
                     "icon": "📈"
                 },
                 "Uniformity Analysis": {

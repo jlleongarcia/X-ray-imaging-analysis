@@ -57,6 +57,55 @@ def _ensure_payload_loaded(payload: dict, show_status: bool = False) -> dict:
     return payload
 
 
+def _extract_dicom_pixel_dtype_hint(file_bytes: bytes):
+    """Infer RAW pixel dtype from embedded DICOM Pixel Data metadata when available.
+
+    Returns:
+        tuple[str | None, str | None]: (dtype_hint, source)
+        dtype_hint in {'uint8', 'uint16', 'float32'}
+    """
+    try:
+        ds = pydicom.dcmread(
+            io.BytesIO(file_bytes),
+            force=True,
+            stop_before_pixels=False,
+            defer_size="1 KB",
+        )
+    except Exception:
+        return None, None
+
+    pixel_data_elem = ds.get((0x7FE0, 0x0010))
+    if pixel_data_elem is None:
+        return None, None
+
+    has_float_pixel_data = ds.get((0x7FE0, 0x0008)) is not None
+    has_double_float_pixel_data = ds.get((0x7FE0, 0x0009)) is not None
+
+    bits_allocated = getattr(ds, 'BitsAllocated', None)
+    if bits_allocated is not None:
+        try:
+            bits_allocated = int(bits_allocated)
+        except (TypeError, ValueError):
+            bits_allocated = None
+
+    if bits_allocated == 8:
+        return 'uint8', 'Pixel Data + BitsAllocated=8'
+    if bits_allocated == 16:
+        return 'uint16', 'Pixel Data + BitsAllocated=16'
+    if bits_allocated == 32 and (has_float_pixel_data or has_double_float_pixel_data):
+        return 'float32', 'Float Pixel Data + BitsAllocated=32'
+
+    vr = str(getattr(pixel_data_elem, 'VR', '')).upper()
+    if vr == 'OB':
+        return 'uint8', 'Pixel Data VR=OB'
+    if vr == 'OW':
+        return 'uint16', 'Pixel Data VR=OW'
+    if vr == 'OF':
+        return 'float32', 'Pixel Data VR=OF'
+
+    return None, None
+
+
 def _build_shared_raw_params(raw_payloads, context_key=""):
     """Render one shared RAW parameter section and return parameters for all RAW files."""
     if not raw_payloads:
@@ -68,6 +117,16 @@ def _build_shared_raw_params(raw_payloads, context_key=""):
     dicom_cols = None
     dicom_ps_row = None
     dicom_ps_col = None
+    dtype_hints = []
+    dtype_hint_sources = set()
+
+    for raw_file in raw_payloads:
+        _, raw_bytes = file_name_and_bytes(raw_file)
+        hint, source = _extract_dicom_pixel_dtype_hint(raw_bytes)
+        if hint in {'uint8', 'uint16', 'float32'}:
+            dtype_hints.append(hint)
+        if source:
+            dtype_hint_sources.add(source)
 
     try:
         ds_meta = pydicom.dcmread(io.BytesIO(ref_bytes), force=True, stop_before_pixels=True)
@@ -88,16 +147,39 @@ def _build_shared_raw_params(raw_payloads, context_key=""):
         st.caption(f"Reference file: {ref_name}")
 
         if dicom_rows and dicom_cols:
-            st.info(f"📋 DICOM metadata found: {dicom_cols}×{dicom_rows} pixels")
+            st.info(f"📋 DICOM metadata found")
         dtype_map = {
             '16-bit Unsigned Integer': np.uint16,
             '8-bit Unsigned Integer': np.uint8,
             '32-bit Float': np.float32
         }
+        hint_to_label = {
+            'uint8': '8-bit Unsigned Integer',
+            'uint16': '16-bit Unsigned Integer',
+            'float32': '32-bit Float',
+        }
+
+        default_dtype_label = '16-bit Unsigned Integer'
+        if dtype_hints:
+            unique_dtype_hints = sorted(set(dtype_hints))
+            if len(unique_dtype_hints) == 1:
+                default_dtype_label = hint_to_label.get(unique_dtype_hints[0], default_dtype_label)
+            else:
+                st.warning(
+                    "Conflicting Pixel Data dtype hints detected across uploaded RAW files. "
+                    "Using fallback default: 16-bit Unsigned Integer."
+                )
+
+        if dtype_hint_sources:
+            st.caption(
+                "Pixel dtype auto-preset from DICOM Pixel Data (7FE0,0010): "
+                + ", ".join(sorted(dtype_hint_sources))
+            )
+
         dtype_str = st.selectbox(
             "Pixel Data Type",
             options=list(dtype_map.keys()),
-            index=0,
+            index=list(dtype_map.keys()).index(default_dtype_label),
             key=f"{context_key}dtype_shared"
         )
         np_dtype = dtype_map[dtype_str]

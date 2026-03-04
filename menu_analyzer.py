@@ -495,7 +495,7 @@ def main_app_ui():
                     "computation": "Assign kerma value to each uploaded RAW/STD file, compute central 100x100 MPV and σ.\n\n Uses least-squares fitting to establish: $MPV = f(K_{air})$ and $EI = f(K_{air})$. Enables conversion from detector units to air kerma for subsequent analyses.\n\n Provides detailed noise components analysis by Weighted Robust Linear Models to separate quantum noise, electronic noise, and structural noise. Forces parameters to be non-negative.",
                     "icon": "📈"
                 },
-                "Uniformity Analysis": {
+                "Uniformity": {
                     "description": "Measure spatial uniformity across detector area",
                     "files_needed": "1 flat-field image",
                     "file_types": "RAW/STD files only",
@@ -503,7 +503,7 @@ def main_app_ui():
                     "computation": "Calculates uniformity metrics within a central 80% area ROI using a sliding 30mm × 30mm window.\n\n**MPV Global Uniformity:**\n$$U_{global} = max\left(\\frac{|MPV_{ij}-MVP|}{MPV}\\right)$$\n\n**MPV Local Uniformity:**\n$$U_{local} = max\left(\\frac{|MPV_{ij}-MVP_{8n}|}{MPV_{8n}}\\right)$$\n\n**SNR Global Uniformity:**\n$$SNR_{global} = max\left(\\frac{|SNR_{ij}-SNR|}{SNR}\\right)$$\n\n**SNR Local Uniformity:**\n$$SNR_{local} = max\left(\\frac{|SNR_{ij}-SNR_{8n}|}{SNR_{8n}}\\right)$$",
                     "icon": "🔲"
                 },
-                "MTF (Sharpness)": {
+                "Modulation Transfer Function (MTF)": {
                     "description": "Measure spatial resolution and sharpness",
                     "files_needed": "1-2 images with edge/slit phantom",
                     "file_types": "RAW/STD files only",
@@ -511,7 +511,7 @@ def main_app_ui():
                     "computation": "IEC 62220-1-1:2015 slanted edge method. Uses Hough transform for edge detection, computes Edge Spread Function (ESF), differentiates to get Line Spread Function: $LSF = \\frac{dESF}{dx}$, then Fourier transform: $MTF(f) = |\\mathcal{F}\\{LSF\\}|$. Reports $MTF_{10\\%}$ and $MTF_{50\\%}$ as key metrics.",
                     "icon": "📐"
                 },
-                "NPS (Noise)": {
+                "Noise Power Spectrum (NPS)": {
                     "description": "Characterize noise power spectrum",
                     "files_needed": "1+ uniform images",
                     "file_types": "RAW/STD files only",
@@ -527,7 +527,7 @@ def main_app_ui():
                     "computation": "IEC 62220-1-1:2015 formula: $$DQE(f) = \\frac{MTF^2(f)}{NPS(f) \\cdot K_{air}}$$ \n\n Where: \n\n- $\\text{MTF}(f)$ = Modulation Transfer Function (geometric mean of orthogonal edges) \n\n - $\\text{NNPS}(f)$ = Normalized Noise Power Spectrum (radial average) \n\n - $K_{air}$ = Air kerma in μGy \n\n - $f$ = Spatial frequency in lp/mm",
                     "icon": "🎯"
                 },
-                "Threshold Contrast": {
+                "Threshold Contrast Detail Detectability (TCDD)": {
                     "description": "Measure low-contrast detectability",
                     "files_needed": "1 image with contrast phantom",
                     "file_types": "RAW/STD files only",

@@ -89,7 +89,6 @@ def _build_shared_raw_params(raw_payloads, context_key=""):
 
         if dicom_rows and dicom_cols:
             st.info(f"📋 DICOM metadata found: {dicom_cols}×{dicom_rows} pixels")
-
         dtype_map = {
             '16-bit Unsigned Integer': np.uint16,
             '8-bit Unsigned Integer': np.uint8,
@@ -553,29 +552,33 @@ def main_app_ui():
 {requirements_list}{computation_text}
 """)
             
-            # Now show the upload section
-            st.markdown("---")
-            st.markdown("### 📤 Upload Files")
-            
-            # Dynamic file uploader based on selected test
-            uploaded_files = st.file_uploader(
-                f"Upload files for {st.session_state['selected_test']}",
-                type=None,
-                accept_multiple_files=True,
-                help=f"Upload: {selected_test_info['file_types']}",
-                key=f"uploader_{st.session_state['selected_test']}"
-            )
-            
-            # Process files if uploaded
-            if uploaded_files:
-                process_analysis_workflow(
-                    uploaded_files, 
-                    st.session_state['selected_category'],
-                    st.session_state['selected_test'],
-                    analysis_catalog
-                )
+            if st.session_state['selected_test'] == "DQE (Detective Quantum Efficiency)":
+                st.markdown("---")
+                display_dqe_analysis_section()
             else:
-                st.warning("⬆️ Please upload the required files to continue")
+                # Now show the upload section
+                st.markdown("---")
+                st.markdown("### 📤 Upload Files")
+
+                # Dynamic file uploader based on selected test
+                uploaded_files = st.file_uploader(
+                    f"Upload files for {st.session_state['selected_test']}",
+                    type=None,
+                    accept_multiple_files=True,
+                    help=f"Upload: {selected_test_info['file_types']}",
+                    key=f"uploader_{st.session_state['selected_test']}"
+                )
+
+                # Process files if uploaded
+                if uploaded_files:
+                    process_analysis_workflow(
+                        uploaded_files,
+                        st.session_state['selected_category'],
+                        st.session_state['selected_test'],
+                        analysis_catalog
+                    )
+                else:
+                    st.warning("⬆️ Please upload the required files to continue")
     
     else:
         # No category selected yet - show welcome message
@@ -605,6 +608,12 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
     This replaces the old monolithic file processing logic.
     """
     
+    # DQE does not require file upload; it computes from cached MTF + NPS results.
+    if test_name == "DQE (Detective Quantum Efficiency)":
+        st.markdown("---")
+        display_dqe_analysis_section()
+        return
+
     # Determine file types by content
     detected_file_types = []
     for f in uploaded_files:
@@ -819,9 +828,6 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
     
     elif test_name == "Threshold Contrast":
         display_threshold_contrast_section(image_array, pixel_spacing_row, pixel_spacing_col)
-    
-    elif test_name == "DQE (Detective Quantum Efficiency)":
-        display_dqe_analysis_section()
 
 
 def load_single_image(uploaded_file, file_type, show_status=True, shared_raw_params=None):

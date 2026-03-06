@@ -112,8 +112,11 @@ def display_dicom_postprocessing_analysis_section(preloaded_files: list[dict]):
             ).round(4)
 
         st.success("DICOM analysis complete.")
-        styled_results_df = results_df.style.set_properties(
-            subset=["SNR (100x100 center ROI)"],
-            **{"text-align": "left"}
-        )
-        st.dataframe(styled_results_df, use_container_width=True)
+        # Streamlit right-aligns numeric columns by default; cast SNR to text for left alignment.
+        display_df = results_df.copy()
+        if "SNR (100x100 center ROI)" in display_df.columns:
+            display_df["SNR (100x100 center ROI)"] = display_df["SNR (100x100 center ROI)"].map(
+                lambda x: "" if pd.isna(x) else f"{x:.4f}"
+            )
+
+        st.dataframe(display_df, use_container_width=True)

@@ -7,7 +7,7 @@ def run_app(port):
     print(f"Starting the Streamlit app on port {port}...")
     try:
         subprocess.check_call([
-            sys.executable, "-m", "streamlit", "run", "menu_analyzer.py",
+            sys.executable, "-m", "streamlit", "run", "src/app/menu_analyzer/app.py",
             "--server.address=0.0.0.0", # Make Streamlit accessible to all interfaces
             f"--server.port={port}",
             "--server.headless", "true" # Avoid asking for email 

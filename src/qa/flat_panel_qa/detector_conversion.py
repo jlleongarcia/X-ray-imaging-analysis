@@ -5,8 +5,8 @@ import csv
 import matplotlib.pyplot as plt
 import pydicom
 from scipy.optimize import least_squares
-from raw_endian import frombuffer_with_endian
-from analysis_payload import ImagePayload, file_name_and_bytes
+from src.core.io.raw_endian import frombuffer_with_endian
+from src.core.io.analysis_payload import ImagePayload, file_name_and_bytes
 
 """
 Detector conversion feature: Upload RAW/STD files, assign kerma values, extract ROI stats,

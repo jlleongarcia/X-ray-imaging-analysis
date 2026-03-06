@@ -5,7 +5,7 @@ import pandas as pd
 import altair as alt
 from typing import List, Optional
 import time
-from analysis_payload import ImagePayload
+from src.core.io.analysis_payload import ImagePayload
 
 def _central_roi_mean(image: np.ndarray, roi_size: int) -> float:
     """Compute the mean of a centered square ROI of given size."""

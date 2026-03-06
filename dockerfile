@@ -21,4 +21,4 @@ EXPOSE 8502
 
 # Set the entry point to run the Streamlit app
 # Replace 'your_app.py' with the name of your main Streamlit file
-ENTRYPOINT ["streamlit", "run", "menu_analyzer.py", "--server.port=8502", "--server.enableCORS=true", "--server.enableXsrfProtection=false"]
+ENTRYPOINT ["streamlit", "run", "src/app/menu_analyzer/app.py", "--server.port=8502", "--server.enableCORS=true", "--server.enableXsrfProtection=false"]

@@ -1,7 +1,7 @@
 import streamlit as st
 import numpy as np
 import os
-from analysis_payload import ImagePayload, file_name_and_bytes
+from src.core.io.analysis_payload import ImagePayload, file_name_and_bytes
 
 # Note: dicom_utils removed. Use pydicom.pixel_array (stored values) directly.
 

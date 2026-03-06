@@ -82,20 +82,20 @@ install:
 dev:
 	@echo "🔧 Starting Streamlit app in development mode..."
 	@echo "Access the app at: http://localhost:8502"
-	streamlit run menu_analyzer.py --server.port=8502 --server.enableCORS=true
+	streamlit run src/app/menu_analyzer/app.py --server.port=8502 --server.enableCORS=true
 
 test:
 	@echo "🧪 Running Python syntax checks..."
-	@echo "Checking menu_analyzer.py..."
-	@python3 -m py_compile menu_analyzer.py && echo "✅ menu_analyzer.py: OK" || echo "❌ menu_analyzer.py: FAILED"
-	@echo "Checking detector_conversion.py..."
-	@python3 -m py_compile detector_conversion.py && echo "✅ detector_conversion.py: OK" || echo "❌ detector_conversion.py: FAILED"
-	@echo "Checking uniformity.py..."
-	@python3 -m py_compile uniformity.py && echo "✅ uniformity.py: OK" || echo "❌ uniformity.py: FAILED"
-	@echo "Checking MTF.py..."
-	@python3 -m py_compile MTF.py && echo "✅ MTF.py: OK" || echo "❌ MTF.py: FAILED"
-	@echo "Checking NPS.py..."
-	@python3 -m py_compile NPS.py && echo "✅ NPS.py: OK" || echo "❌ NPS.py: FAILED"
+	@echo "Checking src/app/menu_analyzer/app.py..."
+	@python3 -m py_compile src/app/menu_analyzer/app.py && echo "✅ src/app/menu_analyzer/app.py: OK" || echo "❌ src/app/menu_analyzer/app.py: FAILED"
+	@echo "Checking src/qa/flat_panel_qa/detector_conversion.py..."
+	@python3 -m py_compile src/qa/flat_panel_qa/detector_conversion.py && echo "✅ src/qa/flat_panel_qa/detector_conversion.py: OK" || echo "❌ src/qa/flat_panel_qa/detector_conversion.py: FAILED"
+	@echo "Checking src/qa/flat_panel_qa/uniformity.py..."
+	@python3 -m py_compile src/qa/flat_panel_qa/uniformity.py && echo "✅ src/qa/flat_panel_qa/uniformity.py: OK" || echo "❌ src/qa/flat_panel_qa/uniformity.py: FAILED"
+	@echo "Checking src/qa/flat_panel_qa/mtf.py..."
+	@python3 -m py_compile src/qa/flat_panel_qa/mtf.py && echo "✅ src/qa/flat_panel_qa/mtf.py: OK" || echo "❌ src/qa/flat_panel_qa/mtf.py: FAILED"
+	@echo "Checking src/qa/flat_panel_qa/nps.py..."
+	@python3 -m py_compile src/qa/flat_panel_qa/nps.py && echo "✅ src/qa/flat_panel_qa/nps.py: OK" || echo "❌ src/qa/flat_panel_qa/nps.py: FAILED"
 
 lint:
 	@echo "🔍 Running code linting..."

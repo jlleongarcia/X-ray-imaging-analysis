@@ -1,3 +1,3 @@
-from .app import main_app_ui
+"""menu_analyzer package."""
 
-__all__ = ["main_app_ui"]
+__all__ = []

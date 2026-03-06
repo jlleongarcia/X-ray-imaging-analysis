@@ -8,6 +8,7 @@ from src.qa.flat_panel_qa.mtf import display_mtf_analysis_section
 from src.qa.flat_panel_qa.nps import display_nps_analysis_section
 from src.qa.flat_panel_qa.threshold_contrast import display_threshold_contrast_section
 from src.qa.flat_panel_qa.uniformity import display_uniformity_analysis_section
+from src.qa.dicom_analysis.postprocessing_constancy import display_dicom_postprocessing_analysis_section
 from src.tools.developer_tools.comparison_tool import display_comparison_tool_section
 from src.tools.developer_tools.dicomizer import generate_dicom_from_raw
 
@@ -83,6 +84,20 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
 
     if unknown_files:
         st.error(f"⚠️ Unknown file types detected: {[f.name for f in unknown_files]}")
+        return
+
+    if test_name == "DICOM Post-processing Analysis":
+        if len(dicom_files) == 0:
+            st.warning("⚠️ Please upload at least one DICOM file for this analysis")
+            return
+
+        if len(raw_files) > 0:
+            st.error("⚠️ This analysis only accepts DICOM files")
+            return
+
+        for p in preloaded_payloads:
+            ensure_payload_loaded(p, show_status=False)
+        display_dicom_postprocessing_analysis_section(preloaded_payloads)
         return
 
     if test_name == "RAW vs DICOM Comparison":

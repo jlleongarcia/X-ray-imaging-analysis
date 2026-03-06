@@ -79,27 +79,20 @@ def main_app_ui():
     analysis_catalog = get_analysis_catalog()
 
     st.markdown("---")
-    col1, col2 = st.columns(2)
+    category_names = list(analysis_catalog.keys())
+    category_cols = st.columns(len(category_names))
 
-    with col1:
-        if st.button(
-            f"{analysis_catalog['Flat Panel QA']['icon']} **Flat Panel QA**\n\n{analysis_catalog['Flat Panel QA']['description']}",
-            use_container_width=True,
-            type="primary" if st.session_state['selected_category'] == "Flat Panel QA" else "secondary"
-        ):
-            st.session_state['selected_category'] = "Flat Panel QA"
-            st.session_state['selected_test'] = None
-            st.rerun()
-
-    with col2:
-        if st.button(
-            f"{analysis_catalog['Developer Tools']['icon']} **Developer Tools**\n\n{analysis_catalog['Developer Tools']['description']}",
-            use_container_width=True,
-            type="primary" if st.session_state['selected_category'] == "Developer Tools" else "secondary"
-        ):
-            st.session_state['selected_category'] = "Developer Tools"
-            st.session_state['selected_test'] = None
-            st.rerun()
+    for col, category_name in zip(category_cols, category_names):
+        category_info = analysis_catalog[category_name]
+        with col:
+            if st.button(
+                f"{category_info['icon']} **{category_name}**\n\n{category_info['description']}",
+                use_container_width=True,
+                type="primary" if st.session_state['selected_category'] == category_name else "secondary"
+            ):
+                st.session_state['selected_category'] = category_name
+                st.session_state['selected_test'] = None
+                st.rerun()
 
     if st.session_state['selected_category']:
         st.markdown("---")

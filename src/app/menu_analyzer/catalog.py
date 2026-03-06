@@ -75,5 +75,23 @@ def get_analysis_catalog():
                     "icon": "⚖️"
                 }
             }
+        },
+        "DICOM Analysis": {
+            "icon": "🏥",
+            "description": "Constancy checks for post-processed DICOM images",
+            "tests": {
+                "DICOM Post-processing Analysis": {
+                    "description": "Compute central ROI SNR and key DICOM metadata across multiple images",
+                    "files_needed": "1+ DICOM images",
+                    "file_types": "DICOM files only (.dcm/.dicom)",
+                    "requirements": [
+                        "One or more DICOM files",
+                        "Each image must be at least 100x100 pixels",
+                        "Pixel data must be decodable from DICOM"
+                    ],
+                    "computation": "For each uploaded DICOM image, extracts a central $100 \\times 100$ ROI and computes Signal-to-Noise Ratio as $SNR = \\mu/\\sigma$, where $\\mu$ is ROI mean pixel value and $\\sigma$ is ROI standard deviation. The output table includes per-image SNR and DICOM tags (0018,1405) Relative X-ray Exposure and (0018,0015) Body Part Examined.",
+                    "icon": "📋"
+                }
+            }
         }
     }

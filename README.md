@@ -15,6 +15,7 @@ The toolkit is built with modularity in mind, allowing for easy extension and ad
 *   **Raw Data Handling**: The previous helper that attempted DICOM→RAW conversion has been removed. The app uses `pydicom`'s `pixel_array` consistently for display and analysis.
 *   **From RAW to DICOM tool**: Convert RAW files into DICOM ones.
 *   **Interactive Analysis Modules**:
+    *   **DICOM Post-processing Analysis**: Upload one or more DICOM images and compute central 100×100 ROI SNR per image, reported with DICOM tags (0018,1405) Relative X-ray Exposure and (0018,0015) Body Part Examined in a results table.
     *   **Uniformity Analysis**: Calculates Global and Local Uniformity for both Pixel Value (PV) and Signal-to-Noise Ratio (SNR).
     *   **Noise Power Spectrum (NPS)**: Computes and plots the 1D radially averaged Normalized NPS (NNPS).
     *   **Modulation Transfer Function (MTF)**: Provides an MTF estimate using the image's central row as a proxy LSF (note: a slit/edge phantom yields better MTF results).

@@ -156,6 +156,10 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
             st.warning(f"⚠️ Detector Response Curve requires at least 3 RAW files (currently {len(raw_files)} uploaded)")
             return
 
+        # Use shared RAW decoding path before preview/analysis.
+        for payload in raw_payloads:
+            ensure_payload_loaded(payload, show_status=False)
+
         ref_file = raw_payloads[0]
         ref_image, ref_ps_row, ref_ps_col, ref_name = load_single_image(
             ref_file,
@@ -208,10 +212,10 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
 
     st.markdown("---")
 
-    if test_name == "Uniformity Analysis":
+    if test_name == "Uniformity":
         display_uniformity_analysis_section(image_array, pixel_spacing_row, pixel_spacing_col)
 
-    elif test_name == "MTF (Sharpness)":
+    elif test_name == "Modulation Transfer Function (MTF)":
         for p in preloaded_payloads:
             ensure_payload_loaded(p, show_status=False)
         display_mtf_analysis_section(
@@ -221,7 +225,7 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
             preloaded_files=preloaded_payloads,
         )
 
-    elif test_name == "NPS (Noise)":
+    elif test_name == "Noise Power Spectrum (NPS)":
         for p in preloaded_payloads:
             ensure_payload_loaded(p, show_status=False)
         display_nps_analysis_section(
@@ -231,5 +235,5 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
             preloaded_files=preloaded_payloads,
         )
 
-    elif test_name == "Threshold Contrast":
+    elif test_name == "Threshold Contrast Detail Detectability (TCDD)":
         display_threshold_contrast_section(image_array, pixel_spacing_row, pixel_spacing_col)

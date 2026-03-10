@@ -16,6 +16,9 @@ RUN pip install --upgrade pip setuptools wheel && \
 # Copy the rest of your Streamlit app code
 COPY . .
 
+# Set PYTHONPATH so Python can find the src module
+ENV PYTHONPATH=/app
+
 # Expose the default Streamlit port
 EXPOSE 8502
 

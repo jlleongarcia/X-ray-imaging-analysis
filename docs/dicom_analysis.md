@@ -51,9 +51,15 @@ The analysis uses a fixed **100 × 100 pixel** ROI extracted from the image cent
 
 Extracts a central rectangular ROI from the input image. Returns `None` if the image is smaller than the requested ROI dimensions.
 
-#### `_compute_snr_from_roi(roi_array) -> float`
+#### `_compute_snr_components(roi_array) -> tuple[float, float, float]`
 
-Computes $\text{SNR} = \mu / \sigma$ for the ROI. Handles the edge case of zero standard deviation (perfectly uniform region) by returning `np.nan`.
+Computes the three magnitudes used in constancy reporting from the center ROI:
+
+- **Mean Pixel Value** ($\mu$)
+- **Standard Deviation** ($\sigma$)
+- **SNR** ($\mu/\sigma$)
+
+Handles the edge case of zero standard deviation by returning `np.nan` for SNR while still returning the measured mean and standard deviation.
 
 #### `_get_dicom_tags(file_bytes) -> tuple[str, str]`
 
@@ -68,9 +74,9 @@ The Streamlit UI entry point. For each uploaded DICOM file:
 
 1. Decodes the pixel array via the centralized image loader.
 2. Extracts the 100 × 100 center ROI.
-3. Computes SNR.
+3. Computes Mean Pixel Value, Standard Deviation, and SNR.
 4. Extracts metadata tags.
-5. Assembles results into a pandas DataFrame with columns: **File**, **Body Part Examined**, **Relative X-ray Exposure**, **SNR**, **Status**.
+5. Assembles results into a pandas DataFrame with columns: **File**, **Body Part Examined**, **Relative X-ray Exposure**, **Mean Pixel Value**, **Standard Deviation**, **SNR**, **Status**.
 
 The results table enables at-a-glance comparison across multiple images — for example, a series of monthly constancy images acquired with the same protocol.
 
@@ -86,9 +92,9 @@ Upload N DICOM images (monthly constancy acquisitions)
    ┌─────────────────────────────────────┐
    │ 1. Decode pixel array (pydicom)     │
    │ 2. Extract 100×100 center ROI       │
-   │ 3. Compute SNR = μ / σ              │
-   │ 4. Read Relative X-ray Exposure tag │
-   │ 5. Read Body Part Examined tag      │
+      │ 3. Compute μ, σ, and SNR = μ / σ    │
+      │ 4. Read Relative X-ray Exposure tag │
+      │ 5. Read Body Part Examined tag      │
    └─────────────────────────────────────┘
        │
        ▼
@@ -115,5 +121,5 @@ The module supports the medical physicist's workflow of periodically acquiring s
 ## Design Decisions
 
 - **Fixed ROI size (100 × 100)**: Standardized across all measurements for reproducibility. Large enough for statistical validity, small enough to avoid heel effect contamination.
-- **Metadata extraction**: Including DICOM tags alongside SNR values allows the physicist to identify and filter outliers caused by non-standard acquisition parameters rather than true system degradation.
+- **Metadata extraction**: Including DICOM tags alongside Mean Pixel Value, Standard Deviation, and SNR values allows the physicist to identify and filter outliers caused by non-standard acquisition parameters rather than true system degradation.
 - **Multi-file support**: Accepting multiple DICOM files simultaneously enables batch processing of constancy series, reducing manual effort in routine QA programs.

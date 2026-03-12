@@ -6,6 +6,9 @@ import pydicom
 import streamlit as st
 
 
+SNR_COLUMN = "Signal-to-Noise Ratio"
+
+
 def _extract_center_roi(image_array: np.ndarray, roi_height: int = 100, roi_width: int = 100):
     if not isinstance(image_array, np.ndarray) or image_array.ndim != 2:
         return None
@@ -22,17 +25,17 @@ def _extract_center_roi(image_array: np.ndarray, roi_height: int = 100, roi_widt
     return image_array[row_start:row_end, col_start:col_end]
 
 
-def _compute_snr_from_roi(roi_array: np.ndarray) -> float:
+def _compute_snr_components(roi_array: np.ndarray) -> tuple[float, float, float]:
     if roi_array is None or roi_array.size == 0:
-        return np.nan
+        return np.nan, np.nan, np.nan
 
     mean_signal = float(np.mean(roi_array))
     noise_sd = float(np.std(roi_array))
 
     if np.isclose(noise_sd, 0.0):
-        return np.nan
+        return mean_signal, noise_sd, np.nan
 
-    return mean_signal / noise_sd
+    return mean_signal, noise_sd, (mean_signal / noise_sd)
 
 
 def _get_dicom_tags(file_bytes: bytes) -> tuple[str, str]:
@@ -73,7 +76,9 @@ def display_dicom_postprocessing_analysis_section(preloaded_files: list[dict]):
                         "File": file_name,
                         "Body Part Examined": body_part_examined,
                         "Relative X-ray Exposure": relative_xray_exposure,
-                        "SNR (100x100 center ROI)": np.nan,
+                        "Mean Pixel Value": np.nan,
+                        "Standard Deviation": np.nan,
+                        SNR_COLUMN: np.nan,
                         "Status": "Failed to decode image",
                     })
                     continue
@@ -84,19 +89,23 @@ def display_dicom_postprocessing_analysis_section(preloaded_files: list[dict]):
                         "File": file_name,
                         "Body Part Examined": body_part_examined,
                         "Relative X-ray Exposure": relative_xray_exposure,
-                        "SNR (100x100 center ROI)": np.nan,
+                        "Mean Pixel Value": np.nan,
+                        "Standard Deviation": np.nan,
+                        SNR_COLUMN: np.nan,
                         "Status": "Image smaller than 100x100",
                     })
                     continue
 
-                snr_value = _compute_snr_from_roi(roi_array)
+                mean_signal, noise_sd, snr_value = _compute_snr_components(roi_array)
                 status_msg = "OK" if np.isfinite(snr_value) else "Invalid ROI noise (std=0 or non-finite)"
 
                 rows.append({
                     "File": file_name,
                     "Body Part Examined": body_part_examined,
                     "Relative X-ray Exposure": relative_xray_exposure,
-                    "SNR (100x100 center ROI)": snr_value,
+                    "Mean Pixel Value": mean_signal,
+                    "Standard Deviation": noise_sd,
+                    SNR_COLUMN: snr_value,
                     "Status": status_msg,
                 })
 
@@ -105,17 +114,35 @@ def display_dicom_postprocessing_analysis_section(preloaded_files: list[dict]):
             return
 
         results_df = pd.DataFrame(rows)
-        if "SNR (100x100 center ROI)" in results_df.columns:
-            results_df["SNR (100x100 center ROI)"] = pd.to_numeric(
-                results_df["SNR (100x100 center ROI)"],
+        if SNR_COLUMN in results_df.columns:
+            results_df[SNR_COLUMN] = pd.to_numeric(
+                results_df[SNR_COLUMN],
+                errors='coerce'
+            ).round(4)
+        if "Mean Pixel Value" in results_df.columns:
+            results_df["Mean Pixel Value"] = pd.to_numeric(
+                results_df["Mean Pixel Value"],
+                errors='coerce'
+            ).round(4)
+        if "Standard Deviation" in results_df.columns:
+            results_df["Standard Deviation"] = pd.to_numeric(
+                results_df["Standard Deviation"],
                 errors='coerce'
             ).round(4)
 
         st.success("DICOM analysis complete.")
         # Streamlit right-aligns numeric columns by default; cast SNR to text for left alignment.
         display_df = results_df.copy()
-        if "SNR (100x100 center ROI)" in display_df.columns:
-            display_df["SNR (100x100 center ROI)"] = display_df["SNR (100x100 center ROI)"].map(
+        if "Mean Pixel Value" in display_df.columns:
+            display_df["Mean Pixel Value"] = display_df["Mean Pixel Value"].map(
+                lambda x: "" if pd.isna(x) else f"{x:.4f}"
+            )
+        if "Standard Deviation" in display_df.columns:
+            display_df["Standard Deviation"] = display_df["Standard Deviation"].map(
+                lambda x: "" if pd.isna(x) else f"{x:.4f}"
+            )
+        if SNR_COLUMN in display_df.columns:
+            display_df[SNR_COLUMN] = display_df[SNR_COLUMN].map(
                 lambda x: "" if pd.isna(x) else f"{x:.4f}"
             )
 

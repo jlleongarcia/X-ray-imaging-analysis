@@ -249,7 +249,7 @@ def _build_inverse_fn(conv):
         raise NotImplementedError("Inverse conversion for 'poly' fit not supported. Use linear or log.")
 
 def _compute_deviations(actual, fitted):
-    """Compute percentage deviations and return list with max absolute deviation."""
+    """Compute percentage deviations and return list with max deviation."""
     actual, fitted = np.array(actual, dtype=float), np.array(fitted, dtype=float)
     with np.errstate(divide='ignore', invalid='ignore'):
         devs = 100.0 * (actual - fitted) / fitted
@@ -381,7 +381,7 @@ def _render_cached_fit(cached, title, x_label, y_label):
     # Show max deviation if available
     max_dev = cached.get("max_deviation")
     if max_dev is not None:
-        st.write(f"Maximum absolute deviation from fit: {max_dev:.3f}%")
+        st.write(f"Maximum deviation from fit: {max_dev:.3f}%")
     
     # Plot if data available
     if "x_data" in cached and "y_data" in cached and "y_fit" in cached:

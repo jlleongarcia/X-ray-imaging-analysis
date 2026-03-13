@@ -278,6 +278,8 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, add
         # --- 1D NNPS Calculation from averaged 2D NNPS ---
         nnps_1d_result = noise_power_spectrum_1d(spectrum_2d=nnps_2d_avg_um2)
 
+        # (NNPS_1D_chart_data used for DQE computation)
+
         # To get the corresponding frequency axis, we do the same radial average
         # on a grid of radial frequencies. This is the most accurate method.
         # 1. Create the frequency axes for the 2D grid.
@@ -295,6 +297,7 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, add
 
         # 5. Combine into arrays for charting and interpolation
         nnps_data_for_chart = np.array([freqs_nnps1d, nnps_1d_result]).T
+
         nnps_x_data_for_chart = np.array([freqs_positive, nnps_x_positive]).T
         nnps_y_data_for_chart = np.array([freqs_positive, nnps_y_positive]).T
 

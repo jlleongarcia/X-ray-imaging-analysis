@@ -48,7 +48,7 @@ def _validate_nps_cache() -> tuple[bool, Optional[str]]:
     
     results = nps_cache['results']
     if 'NNPS_1D_chart_data' not in results:
-        return False, "NNPS data not found in NPS results."
+        return False, "NNPS data not found in NPS results. Please re-run NPS analysis."
     
     return True, None
 
@@ -78,17 +78,18 @@ def compute_dqe_from_caches() -> Optional[Dict[str, Any]]:
         mtf_freq = np.array(geom_mean['frequencies'])
         mtf_values = np.array(geom_mean['mtf_values'])
         
-        # Extract NNPS data
+        # Extract NNPS data for IEC 62220-1-1 DQE
         nps_cache = st.session_state['nps_cache']
         kerma_ugy = nps_cache['kerma_ugy']
         nps_results = nps_cache['results']
         
         nnps_data = nps_results['NNPS_1D_chart_data']
         nnps_freq = np.array([row[0] for row in nnps_data])
-        nnps_values = np.array([row[1] for row in nnps_data])
+        nnps_values_um2 = np.array([row[1] for row in nnps_data])  # NNPS in μm²
+        # Convert NNPS from μm² to mm² (1 mm² = 1e6 μm²)
+        nnps_values = nnps_values_um2 / 1e6  # NNPS in mm²
         
         x_axis_unit = nps_results.get('x_axis_unit_nps', 'lp/mm')
-        nnps_units = nps_results.get('nnps_units', 'μm²')
         
         # Validate frequency units match
         if x_axis_unit not in ['lp/mm', 'cycles/mm']:
@@ -107,30 +108,17 @@ def compute_dqe_from_caches() -> Optional[Dict[str, Any]]:
         
         # Interpolate MTF and NNPS to common grid
         mtf_interp = np.interp(common_freq, mtf_freq, mtf_values)
-        nnps_interp = np.interp(common_freq, nnps_freq, nnps_values)
+        nnps_interp = np.interp(common_freq, nnps_freq, nnps_values)  # mm²
         
-        # Compute DQE = MTF² / (NNPS × K)
-        # NNPS from cache is in μm² and kerma is in μGy.
-        # The μm² and μGy cancel (1 μm² · 1 μGy = 1e-6 mm² · 1e-6 mGy·mm²
-        # = 1e-12 mm⁴·mGy — but the IEC DQE shortcut is simply
-        #   DQE(f) = MTF²(f) / [NNPS_μm²(f) · K_μGy]
-        # which yields a dimensionless result when the NPS was normalised
-        # by mean_signal² and pixel_area is embedded in the 2-D NPS).
+        # IEC 62220-1-1:2015 DQE formula:
+        #   DQE(f) = [MTF²(f) / NNPS(f)] × K × SNR²_in
+        # where:
+        #   NNPS(f) is the normalised noise power spectrum in mm²
+        #   K is the air kerma in µGy
+        #   SNR²_in = 30174 1/(mm² · µGy) for RQA5 beam quality
+        SNR2_IN_RQA5 = 30174  # 1/(mm² · µGy)
         
-        # Ensure NNPS is in μm² for the formula
-        if nnps_units == 'mm²':
-            nnps_um2 = nnps_interp * 1e6   # Convert mm² → μm²
-        elif nnps_units == 'μm²':
-            nnps_um2 = nnps_interp
-        else:
-            st.warning(f"⚠️ Unknown NNPS units: {nnps_units}. Assuming μm².")
-            nnps_um2 = nnps_interp
-        
-        # DQE computation  (same formula used in docs/generate_supporting_figure.py)
-        dqe_values = (mtf_interp ** 2) / (nnps_um2 * kerma_ugy)
-        
-        # Clamp DQE to physically reasonable range [0, 1]
-        dqe_values = np.clip(dqe_values, 0, 1)
+        dqe_values = (mtf_interp ** 2 / nnps_interp) * kerma_ugy * SNR2_IN_RQA5
         
         # Calculate key metrics
         # DQE(0) - low frequency performance
@@ -201,8 +189,7 @@ def _create_dqe_chart(df: pd.DataFrame, x_axis_unit: str, dqe_0: float) -> alt.C
         ),
         y=alt.Y(
             'DQE:Q',
-            title='Detective Quantum Efficiency (DQE)',
-            scale=alt.Scale(domain=[0, 1])
+            title='Detective Quantum Efficiency (DQE)'
         )
     )
     
@@ -267,12 +254,13 @@ def display_dqe_analysis_section():
     
     DQE quantifies the detector's ability to transfer signal-to-noise ratio from input to output:
     
-    $$\\text{DQE}(f) = \\frac{\\text{MTF}^2(f)}{\\text{NNPS}(f) \\times K}$$
+    $$\\text{DQE}(f) = \\frac{\\text{MTF}^2(f)}{\\text{NNPS}(f)} \\times K_a \\times SNR_{in}^2$$
     
     Where:
     - $\\text{MTF}(f)$ = Modulation Transfer Function (geometric mean of orthogonal edges)
-    - $\\text{NNPS}(f)$ = Normalized Noise Power Spectrum (radial average)
-    - $K$ = Air kerma in μGy
+    - $\\text{NNPS}(f)$ = Normalized Noise Power Spectrum (radial average, mm²)
+    - $K_a$ = Air kerma in μGy
+    - $SNR_{in}^2$ = 30174 $1/(mm^2 \\cdot μGy)$ for RQA5 beam quality
     - $f$ = Spatial frequency in lp/mm
     """)
     

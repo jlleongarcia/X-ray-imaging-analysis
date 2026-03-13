@@ -16,7 +16,7 @@ src/qa/flat_panel_qa/
 ├── uniformity.py              ← Spatial uniformity (global & local, IEC method)
 ├── mtf.py                     ← Modulation Transfer Function (slanted edge, IEC 62220-1-1)
 ├── nps.py                     ← Noise Power Spectrum (2D FFT averaging, IEC 62220-1-1)
-├── dqe.py                     ← Detective Quantum Efficiency (MTF² / NNPS·K, IEC 62220-1-1)
+├── dqe.py                     ← Detective Quantum Efficiency (IEC 62220-1-1, MTF²/NPS × K × SNR²_in)
 └── threshold_contrast.py      ← Threshold Contrast Detail Detectability (statistical method)
 ```
 
@@ -181,7 +181,7 @@ $$\text{NNPS}(u, v) = \frac{\Delta x \cdot \Delta y}{N_x \cdot N_y} \cdot \frac{
 where $\Delta x, \Delta y$ are pixel spacings, $N_x, N_y$ are ROI dimensions, and $\mu$ is the mean pixel value. Units are converted to $\mu m^2$.
 
 5. **1D profiles**:
-   - **Radial average**: Isotropic 1D NNPS for DQE computation.
+   - **Radial average**: Isotropic 1D NNPS (in μm²) for display, plus raw 1D NPS (in mm²) for DQE computation.
    - **X-axis and Y-axis components**: Directional profiles for detecting anisotropic noise (e.g., scan-line artifacts).
 
 6. **IEC guideline**: A warning is issued if the total number of analyzed pixels is below 4 million (the IEC threshold for statistical reliability).
@@ -190,22 +190,27 @@ where $\Delta x, \Delta y$ are pixel spacings, $N_x, N_y$ are ROI dimensions, an
 
 ### `dqe.py` — Detective Quantum Efficiency
 
-The **figure of merit** for a digital X-ray detector, synthesizing spatial resolution (MTF), noise (NNPS), and dose (kerma) into a single frequency-dependent metric. Defined by IEC 62220-1-1:2015 as:
+The **figure of merit** for a digital X-ray detector, synthesizing spatial resolution (MTF), noise (NPS), and dose (kerma) into a single frequency-dependent metric. Defined by IEC 62220-1-1:2015 as:
 
-$$\text{DQE}(f) = \frac{\text{MTF}^2(f)}{\text{NNPS}(f) \cdot K_{\text{air}}}$$
+$$\text{DQE}(f) = \frac{\text{MTF}^2(f)}{\text{NPS}(f)} \times K \times SNR^2_{in}$$
+
+where:
+- $\text{NPS}(f)$ is the **raw** (un-normalised) noise power spectrum in $mm^2$.
+- $K$ is the air kerma at the detector surface in $\mu Gy$.
+- $SNR^2_{in}$ is the ideal (Poisson-limited) input signal-to-noise ratio squared per unit area per unit kerma. For the **RQA5** beam quality specified by IEC 62220-1-1, $SNR^2_{in} = 30174 \; \frac{1}{mm^2 \cdot \mu Gy}$.
 
 #### Prerequisites
 
 DQE computation requires **both** MTF and NPS analyses to have been completed in the same session:
 
 - **MTF cache**: Must contain the geometric mean MTF (two orthogonal edge images).
-- **NPS cache**: Must contain the NNPS radial average and the kerma value used.
+- **NPS cache**: Must contain the raw 1D NPS (radial average in mm²) and the kerma value used.
 
 #### Algorithm
 
-1. **Validation**: Both caches are checked for existence, completeness, and the presence of geometric mean MTF.
-2. **Frequency alignment**: MTF and NNPS are interpolated to a common frequency grid (the intersection of their respective frequency ranges).
-3. **DQE computation**: $\text{DQE}(f) = \text{MTF}^2(f) / (\text{NNPS}(f) \cdot K)$, with NNPS converted from $\mu m^2$ to $mm^2$.
+1. **Validation**: Both caches are checked for existence, completeness, and the presence of geometric mean MTF and raw NPS data.
+2. **Frequency alignment**: MTF and NPS are interpolated to a common frequency grid (the intersection of their respective frequency ranges, 300 points).
+3. **DQE computation**: $\text{DQE}(f) = [\text{MTF}^2(f) / \text{NPS}(f)] \times K \times SNR^2_{in}$, using the raw NPS in $mm^2$ directly from the NPS cache.
 4. **Physical clamping**: DQE values are clamped to $[0, 1]$ — a DQE above 1 is physically impossible (it would mean the detector creates information from noise).
 5. **Key metrics**:
    - **DQE(0)**: Low-frequency detective quantum efficiency (overall dose efficiency).
@@ -268,7 +273,7 @@ where $d$ is the detail diameter in mm, and $a, b, c$ are fitted coefficients. G
 | Geometric mean of orthogonal MTFs | `mtf.py` | Automatic when 2 images provided |
 | NPS from ≥ 4M pixels | `nps.py` | Multi-image support with pixel count warning |
 | NNPS normalization | `nps.py` | $\text{NNPS} = \text{NPS} / \mu^2$ with unit conversion |
-| DQE = MTF² / (NNPS × K) | `dqe.py` | Full computation with physical clamping |
+| DQE = (MTF² / NPS) × K × SNR²_in | `dqe.py` | IEC formula with RQA5 SNR²_in = 30174, raw NPS in mm² |
 | Detector response linearity | `detector_conversion.py` | MPV vs kerma fit with multiple models |
 
 ---
@@ -290,7 +295,7 @@ session_state['mtf_cache']
   └── 'timestamp'
 
 session_state['nps_cache']
-  ├── 'results'     → NNPS data arrays and metadata
+  ├── 'results'     → NNPS data arrays (μm²), raw NPS 1D (mm²), and metadata
   ├── 'kerma_ugy'   → Air kerma used for NPS normalization
   └── 'timestamp'
 ```

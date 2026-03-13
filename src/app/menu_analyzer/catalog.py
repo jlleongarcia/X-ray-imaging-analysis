@@ -36,7 +36,7 @@ def get_analysis_catalog():
                     "computation": "IEC 62220-1-1:2015 standard. Extracts $N \\times N$ ROIs, applies 2D FFT to each ROI, averages power spectra. Normalizes: $$NPS(u,v) = \\frac{\\Delta x \\Delta y}{N_x N_y} |FFT|^2$$ Computes radial profile and integrates for total noise.",
                     "icon": "📡"
                 },
-                "DQE (Detective Quantum Efficiency)": {
+                "Detective Quantum Efficiency (DQE)": {
                     "description": "Calculate overall detector quality metric",
                     "files_needed": "Requires MTF + NPS results",
                     "file_types": "Uses cached results",

@@ -23,7 +23,7 @@ def process_analysis_workflow(uploaded_files, category, test_name, analysis_cata
     This replaces the old monolithic file processing logic.
     """
 
-    if test_name == "DQE (Detective Quantum Efficiency)":
+    if test_name == "Detective Quantum Efficiency (DQE)":
         st.markdown("---")
         display_dqe_analysis_section()
         return

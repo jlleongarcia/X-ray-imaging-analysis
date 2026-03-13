@@ -138,7 +138,7 @@ def main_app_ui():
 {requirements_list}{computation_text}
 """)
 
-            if st.session_state['selected_test'] == "DQE (Detective Quantum Efficiency)":
+            if st.session_state['selected_test'] == "Detective Quantum Efficiency (DQE)":
                 st.markdown("---")
                 display_dqe_analysis_section()
             else:

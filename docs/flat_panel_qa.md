@@ -223,7 +223,7 @@ DQE computation requires **both** MTF and NPS analyses to have been completed in
 
 ### `threshold_contrast.py` — Threshold Contrast Detail Detectability (TCDD)
 
-Estimates the minimum contrast that can be detected in a uniform phantom as a function of detail size, using the **statistical method** described by Chao et al. (2000).
+Estimates the minimum contrast that can be detected in a uniform phantom as a function of detail size, using the **statistical method** described by Paruccini et al. (2021).
 
 #### Input
 

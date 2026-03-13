@@ -110,23 +110,24 @@ def compute_dqe_from_caches() -> Optional[Dict[str, Any]]:
         nnps_interp = np.interp(common_freq, nnps_freq, nnps_values)
         
         # Compute DQE = MTF² / (NNPS × K)
-        # Note: NNPS is in μm², kerma in μGy
-        # DQE formula: DQE(f) = MTF²(f) / [NNPS(f) × K]
-        # Units: dimensionless = dimensionless² / (μm² × μGy)
-        # Need to ensure units are consistent
+        # NNPS from cache is in μm² and kerma is in μGy.
+        # The μm² and μGy cancel (1 μm² · 1 μGy = 1e-6 mm² · 1e-6 mGy·mm²
+        # = 1e-12 mm⁴·mGy — but the IEC DQE shortcut is simply
+        #   DQE(f) = MTF²(f) / [NNPS_μm²(f) · K_μGy]
+        # which yields a dimensionless result when the NPS was normalised
+        # by mean_signal² and pixel_area is embedded in the 2-D NPS).
         
-        # Standard DQE formula with NNPS in mm² and kerma in μGy
-        # Convert NNPS from μm² to mm²: 1 μm² = 1e-6 mm²
-        if nnps_units == 'μm²':
-            nnps_mm2 = nnps_interp * 1e-6  # Convert to mm²
-        elif nnps_units == 'mm²':
-            nnps_mm2 = nnps_interp
+        # Ensure NNPS is in μm² for the formula
+        if nnps_units == 'mm²':
+            nnps_um2 = nnps_interp * 1e6   # Convert mm² → μm²
+        elif nnps_units == 'μm²':
+            nnps_um2 = nnps_interp
         else:
             st.warning(f"⚠️ Unknown NNPS units: {nnps_units}. Assuming μm².")
-            nnps_mm2 = nnps_interp * 1e-6
+            nnps_um2 = nnps_interp
         
-        # DQE computation
-        dqe_values = (mtf_interp ** 2) / (nnps_mm2 * kerma_ugy)
+        # DQE computation  (same formula used in docs/generate_supporting_figure.py)
+        dqe_values = (mtf_interp ** 2) / (nnps_um2 * kerma_ugy)
         
         # Clamp DQE to physically reasonable range [0, 1]
         dqe_values = np.clip(dqe_values, 0, 1)

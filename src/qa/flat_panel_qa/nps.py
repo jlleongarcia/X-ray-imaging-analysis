@@ -197,7 +197,7 @@ def calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col, add
         x_axis_unit_nps = "cycles/pixel"
         pixel_spacing_avg = 1.0  # treat 1 pixel as unit distance
     else:
-        x_axis_unit_nps = "lp/mm"
+        x_axis_unit_nps = "Spatial Frequency (cycles/mm)"
         pixel_spacing_avg = (pixel_spacing_row + pixel_spacing_col) / 2
 
     # Collect all images (base + additional)

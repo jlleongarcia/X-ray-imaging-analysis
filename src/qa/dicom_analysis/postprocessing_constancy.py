@@ -7,6 +7,7 @@ import streamlit as st
 
 
 SNR_COLUMN = "Signal-to-Noise Ratio"
+PIXEL_SPACING_COLUMN = "Pixel Spacing"
 
 
 def _extract_center_roi(image_array: np.ndarray, roi_height: int = 100, roi_width: int = 100):
@@ -52,6 +53,16 @@ def _get_dicom_tags(file_bytes: bytes) -> tuple[str, str]:
     return relative_xray_exposure, body_part_examined
 
 
+def _format_pixel_spacing(pixel_spacing_row, pixel_spacing_col) -> str:
+    if pixel_spacing_row is None or pixel_spacing_col is None:
+        return ""
+
+    try:
+        return f"{float(pixel_spacing_row):.4f}, {float(pixel_spacing_col):.4f}"
+    except (TypeError, ValueError):
+        return ""
+
+
 def display_dicom_postprocessing_analysis_section(preloaded_files: list[dict]):
     st.subheader("DICOM Post-processing Analysis")
     st.caption("Computes central ROI SNR ($100 \\times 100$ pixels) for each uploaded DICOM image.")
@@ -68,6 +79,9 @@ def display_dicom_postprocessing_analysis_section(preloaded_files: list[dict]):
                 file_name = payload.get('name', 'unknown')
                 image_array = payload.get('image_array')
                 file_bytes = payload.get('bytes', b'')
+                pixel_spacing_row = payload.get('pixel_spacing_row')
+                pixel_spacing_col = payload.get('pixel_spacing_col')
+                pixel_spacing = _format_pixel_spacing(pixel_spacing_row, pixel_spacing_col)
 
                 relative_xray_exposure, body_part_examined = _get_dicom_tags(file_bytes)
 
@@ -76,6 +90,7 @@ def display_dicom_postprocessing_analysis_section(preloaded_files: list[dict]):
                         "File": file_name,
                         "Body Part Examined": body_part_examined,
                         "Relative X-ray Exposure": relative_xray_exposure,
+                        PIXEL_SPACING_COLUMN: pixel_spacing,
                         "Mean Pixel Value": np.nan,
                         "Standard Deviation": np.nan,
                         SNR_COLUMN: np.nan,
@@ -89,6 +104,7 @@ def display_dicom_postprocessing_analysis_section(preloaded_files: list[dict]):
                         "File": file_name,
                         "Body Part Examined": body_part_examined,
                         "Relative X-ray Exposure": relative_xray_exposure,
+                        PIXEL_SPACING_COLUMN: pixel_spacing,
                         "Mean Pixel Value": np.nan,
                         "Standard Deviation": np.nan,
                         SNR_COLUMN: np.nan,
@@ -103,6 +119,7 @@ def display_dicom_postprocessing_analysis_section(preloaded_files: list[dict]):
                     "File": file_name,
                     "Body Part Examined": body_part_examined,
                     "Relative X-ray Exposure": relative_xray_exposure,
+                    PIXEL_SPACING_COLUMN: pixel_spacing,
                     "Mean Pixel Value": mean_signal,
                     "Standard Deviation": noise_sd,
                     SNR_COLUMN: snr_value,

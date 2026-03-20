@@ -697,12 +697,14 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
 
                     if use_multi_roi:
                         # 9-ROI averaging: central + 8 shifted by 10px
-                        mean_sd2, sd2_list, central_roi = _multi_roi_variance(
+                        mean_sd2, _, central_roi = _multi_roi_variance(
                             kerma_img, detrend=use_detrend
                         )
                         sd2_vals.append(mean_sd2)
-                        # Use variance across the 9 ROIs as weight (no bootstrap)
-                        bootstrap_vars.append(float(np.var(sd2_list, ddof=1)))
+                        # Bootstrap on the central ROI for weighting
+                        noise_roi = _detrend_roi(central_roi) if use_detrend else central_roi
+                        boot_var = _bootstrap_variance(noise_roi, n_bootstrap=500)
+                        bootstrap_vars.append(boot_var)
                         # Show detrending plane for first image if detrending
                         if use_detrend and not plane_shown:
                             _, _, raw_central = _central_roi_stats(kerma_img)

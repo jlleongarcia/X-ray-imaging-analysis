@@ -3,6 +3,7 @@ import numpy as np
 import io
 import csv
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import pydicom
 from scipy.optimize import least_squares
 from src.core.io.raw_endian import frombuffer_with_endian
@@ -149,6 +150,49 @@ def _detrend_roi(roi):
     return detrended
 
 
+def _plot_detrending_3d(roi_original, roi_detrended, filename=""):
+    """Visualise the fitted detrending plane.
+
+    Left subplot : 3D surface of the fitted plane (slope is clearly visible).
+    Right subplot: 2D colour-map of the same plane (colour = Z / kerma value).
+    """
+    H, W = roi_original.shape
+    y_coords, x_coords = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+
+    # Recompute the fitted plane
+    z_flat = roi_original.flatten()
+    valid = np.isfinite(z_flat)
+    X_design = np.column_stack([x_coords.flatten()[valid],
+                                 y_coords.flatten()[valid],
+                                 np.ones(valid.sum())])
+    coeffs, _, _, _ = np.linalg.lstsq(X_design, z_flat[valid], rcond=None)
+    plane = coeffs[0] * x_coords + coeffs[1] * y_coords + coeffs[2]
+
+    fig = plt.figure(figsize=(16, 6))
+
+    # --- Left: 3D surface of fitted plane only ---
+    ax1 = fig.add_subplot(1, 2, 1, projection='3d')
+    surf = ax1.plot_surface(x_coords, y_coords, plane,
+                            cmap='viridis', edgecolor='none', alpha=0.9)
+    ax1.set_title(f'Fitted plane (heel / dome)\n{filename}', fontsize=10)
+    ax1.set_xlabel('x (px)')
+    ax1.set_ylabel('y (px)')
+    ax1.set_zlabel('Kerma')
+    fig.colorbar(surf, ax=ax1, shrink=0.5, label='Kerma')
+
+    # --- Right: 2D colour-map of the fitted plane ---
+    ax2 = fig.add_subplot(1, 2, 2)
+    im = ax2.imshow(plane, cmap='viridis', origin='lower',
+                    extent=[0, W, 0, H], aspect='equal')
+    ax2.set_title(f'Fitted plane colour-map\n{filename}', fontsize=10)
+    ax2.set_xlabel('x (px)')
+    ax2.set_ylabel('y (px)')
+    fig.colorbar(im, ax=ax2, label='Kerma')
+
+    fig.tight_layout()
+    st.pyplot(fig)
+
+
 def _bootstrap_variance(detrended_roi, n_bootstrap=500):
     """Estimate variance of detrended ROI using bootstrap resampling.
     
@@ -257,7 +301,7 @@ def _compute_deviations(actual, fitted):
     abs_devs = [abs(d) for d in dev_list if d is not None]
     return dev_list, (max(abs_devs) if abs_devs else None)
 
-def _constrained_weighted_fit(k_valid, y_valid, weights, n_starts=4):
+def _constrained_weighted_fit(k_valid, y_valid, weights, n_starts=4, loss='linear'):
     """Perform constrained weighted least squares fit with multi-start verification.
     
     Args:
@@ -265,6 +309,7 @@ def _constrained_weighted_fit(k_valid, y_valid, weights, n_starts=4):
         y_valid: Valid y values (σ²)
         weights: Weights for each point
         n_starts: Number of initial guesses (default 4)
+        loss: Loss function for least_squares ('linear' or 'soft_l1')
     
     Returns:
         Tuple of (a, b, c, success_msg, warning_msg)
@@ -284,7 +329,7 @@ def _constrained_weighted_fit(k_valid, y_valid, weights, n_starts=4):
     for x0 in initial_guesses:
         result = least_squares(
             residuals, x0=x0, bounds=(0, np.inf),
-            loss='soft_l1', f_scale=1.0
+            loss=loss, f_scale=1.0
         )
         if result.success:
             results_list.append(result)
@@ -312,6 +357,72 @@ def _constrained_weighted_fit(k_valid, y_valid, weights, n_starts=4):
                       f"Relative std: a={relative_stds[0]:.4g}, b={relative_stds[1]:.4g}, c={relative_stds[2]:.4g}")
     
     return a, b, c, success_msg, warning_msg
+
+
+def _free_weighted_fit(k_valid, y_valid, weights, loss='linear'):
+    """Perform unconstrained weighted least-squares quadratic fit.
+
+    Uses the same least_squares solver as the constrained path but with
+    unbounded parameters, so the only difference is the absence of a>=0,
+    b>=0, c>=0 bounds.
+
+    Returns:
+        Tuple of (a, b, c, info_msg)
+    """
+    def residuals(params):
+        a, b, c = params
+        y_pred = a * k_valid**2 + b * k_valid + c
+        return np.sqrt(weights) * (y_valid - y_pred)
+
+    x0 = np.polyfit(k_valid, y_valid, 2)
+    result = least_squares(residuals, x0=x0, loss=loss, f_scale=1.0)
+    a, b, c = result.x
+    info_msg = f"Free (unconstrained, loss={loss}) fit: a={a:.4g}, b={b:.4g}, c={c:.4g}"
+    return float(a), float(b), float(c), info_msg
+
+
+def _multi_roi_variance(img_array, roi_h=100, roi_w=100, shift=10, detrend=False):
+    """Compute averaged σ² over 9 overlapping ROIs (central + 8 neighbours).
+
+    The central ROI is extracted first, then 8 additional ROIs are obtained by
+    shifting the centre by ±shift pixels in x and/or y.  Each ROI is optionally
+    detrended, and the final σ² is the mean across all 9 estimates.
+
+    Returns:
+        (mean_sd2, individual_sd2_list, central_roi_for_plotting)
+    """
+    H, W = img_array.shape
+    cy, cx = H // 2, W // 2
+
+    offsets = [
+        ( 0,  0),                                    # centre
+        (-shift,  0), ( shift,  0),                   # N, S
+        ( 0, -shift), ( 0,  shift),                   # W, E
+        (-shift, -shift), (-shift,  shift),            # NW, NE
+        ( shift, -shift), ( shift,  shift),            # SW, SE
+    ]
+
+    sd2_list = []
+    central_roi = None
+    for dy, dx in offsets:
+        y0 = cy + dy - roi_h // 2
+        x0 = cx + dx - roi_w // 2
+        # Clamp to image bounds
+        y0 = max(0, min(y0, H - roi_h))
+        x0 = max(0, min(x0, W - roi_w))
+        roi = img_array[y0:y0 + roi_h, x0:x0 + roi_w]
+
+        if detrend:
+            roi = _detrend_roi(roi)
+
+        if central_roi is None:
+            central_roi = roi  # keep first (central) for plotting
+
+        sd2_list.append(float(np.nanvar(roi, ddof=1)))
+
+    mean_sd2 = float(np.mean(sd2_list))
+    return mean_sd2, sd2_list, central_roi
+
 
 def _compute_dominance_interval(a, b, c):
     """Compute quantum noise dominance interval from fit coefficients.
@@ -553,7 +664,19 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
     # --- Noise: σ² vs Kerma ---
     st.write("### Noise: σ² vs Kerma")
     st.caption("Compute σ on linearized (kerma-domain) ROI, square it (σ²), then fit σ² = a·k² + b·k + c.")
-    
+
+    col_opt1, col_opt2, col_opt3 = st.columns(3)
+    with col_opt1:
+        use_detrend = st.checkbox("Apply planar detrending (heel / dome removal)", value=False, key="sd2_detrend")
+    with col_opt2:
+        use_constrained = st.checkbox("Non-negative constrained fit (a,b,c ≥ 0)", value=True, key="sd2_constrained")
+    with col_opt3:
+        use_multi_roi = st.checkbox("Multi-ROI averaging (9 × 100×100)", value=False, key="sd2_multi_roi")
+
+    # Loss function depends on detrending: detrend ON → pure L2; OFF → robust soft_l1
+    fit_loss = 'linear' if use_detrend else 'soft_l1'
+    st.caption(f"Loss function: **{fit_loss}** ({'detrending removes systematics → L2 sufficient' if use_detrend else 'no detrending → robust loss to handle residual systematics'})")
+
     if st.button("Run fit: σ² vs Kerma", key="run_fit_sd2"):
         conv = dc_state.get("fit")
         if not (isinstance(conv, dict) and conv.get("coeffs")):
@@ -562,92 +685,117 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
             try:
                 inv_fn = _build_inverse_fn(conv)
                 sd2_vals = []
-                bootstrap_vars = []  # Store bootstrap variance estimates for weights
-                
+                bootstrap_vars = []
+                plane_shown = False
+
                 for rec in results["files"]:
                     if rec.get("roi") is None:
                         st.error(f"Missing ROI data for {rec['filename']}")
                         return None
                     kerma_img = np.asarray(inv_fn(rec["roi"]), dtype=float)
                     kerma_img[~np.isfinite(kerma_img)] = np.nan
-                    
-                    # Extract central 100x100 ROI from kerma image
-                    _, _, roi_kerma = _central_roi_stats(kerma_img)
-                    
-                    # Detrend to remove heel effect and geometric dome (keep only noise)
-                    roi_detrended = _detrend_roi(roi_kerma)
-                    
-                    # Bootstrap variance estimation for robust weight calculation
-                    boot_var = _bootstrap_variance(roi_detrended, n_bootstrap=500)
-                    bootstrap_vars.append(boot_var)
-                    
-                    # Compute std of detrended (pure noise) ROI
-                    std_kerma = float(np.nanstd(roi_detrended))
-                    sd2_vals.append(std_kerma**2)
-                
-                k_arr, y_arr = np.array(kerma_vals, dtype=float), np.array(sd2_vals, dtype=float)
-                boot_var_arr = np.array(bootstrap_vars, dtype=float)
-                
-                mask = np.isfinite(k_arr) & np.isfinite(y_arr) & np.isfinite(boot_var_arr) & (k_arr > 0) & (boot_var_arr > 0)
+
+                    if use_multi_roi:
+                        # 9-ROI averaging: central + 8 shifted by 10px
+                        mean_sd2, sd2_list, central_roi = _multi_roi_variance(
+                            kerma_img, detrend=use_detrend
+                        )
+                        sd2_vals.append(mean_sd2)
+                        # Use variance across the 9 ROIs as weight (no bootstrap)
+                        bootstrap_vars.append(float(np.var(sd2_list, ddof=1)))
+                        # Show detrending plane for first image if detrending
+                        if use_detrend and not plane_shown:
+                            _, _, raw_central = _central_roi_stats(kerma_img)
+                            _plot_detrending_3d(raw_central, _detrend_roi(raw_central), filename=rec["filename"])
+                            plane_shown = True
+                    else:
+                        _, _, roi_kerma = _central_roi_stats(kerma_img)
+
+                        if use_detrend:
+                            roi_noise = _detrend_roi(roi_kerma)
+                            if not plane_shown:
+                                _plot_detrending_3d(roi_kerma, roi_noise, filename=rec["filename"])
+                                plane_shown = True
+                        else:
+                            roi_noise = roi_kerma
+
+                        boot_var = _bootstrap_variance(roi_noise, n_bootstrap=500)
+                        bootstrap_vars.append(boot_var)
+
+                        std_kerma = float(np.nanstd(roi_noise))
+                        sd2_vals.append(std_kerma**2)
+
+                k_arr = np.array(kerma_vals, dtype=float)
+                y_arr = np.array(sd2_vals, dtype=float)
+                bv_arr = np.array(bootstrap_vars, dtype=float)
+
+                mask = (np.isfinite(k_arr) & np.isfinite(y_arr)
+                        & np.isfinite(bv_arr) & (k_arr > 0) & (bv_arr > 0))
                 if mask.sum() < 3:
                     st.error("Need at least 3 valid points to fit a quadratic.")
                 else:
-                    k_valid, y_valid = k_arr[mask], y_arr[mask]
-                    boot_var_valid = boot_var_arr[mask]
-                    weights = 1.0 / boot_var_valid
-                    
-                    st.info("Using bootstrap variance estimates (n=500) with non-negative constrained fitting.")
-                    
-                    # Perform constrained weighted fit with multi-start verification
-                    a_, b_, c_, success_msg, warning_msg = _constrained_weighted_fit(k_valid, y_valid, weights)
-                    
-                    if a_ is None:
-                        st.error(warning_msg)
-                        return None
-                    
-                    # Display convergence messages
-                    if warning_msg:
-                        st.warning(warning_msg)
-                    if success_msg:
-                        st.success(success_msg)
-                    
-                    # Compute fitted values and R²
+                    k_v, y_v = k_arr[mask], y_arr[mask]
+                    w = 1.0 / bv_arr[mask]
+
+                    if use_constrained:
+                        st.info(f"Non-negative constrained fit (loss={fit_loss}) with bootstrap weights.")
+                        a_, b_, c_, ok_msg, warn_msg = _constrained_weighted_fit(k_v, y_v, w, loss=fit_loss)
+                        if a_ is None:
+                            st.error(warn_msg)
+                            return None
+                        if warn_msg:
+                            st.warning(warn_msg)
+                        if ok_msg:
+                            st.success(ok_msg)
+                    else:
+                        a_, b_, c_, info_msg = _free_weighted_fit(k_v, y_v, w, loss=fit_loss)
+                        st.info(info_msg)
+
                     y_fit = a_ * k_arr**2 + b_ * k_arr + c_
                     ss_res = np.nansum((y_arr - y_fit)**2)
                     ss_tot = np.nansum((y_arr - np.nanmean(y_arr))**2)
                     r2_sd = 1.0 - ss_res / ss_tot if ss_tot != 0 else np.nan
-                    
-                    # Compute dominance interval
+
                     interval_info = _compute_dominance_interval(a_, b_, c_)
-                    
-                    # Store results
+
+                    label_detrend = "detrended" if use_detrend else "raw"
+                    label_fit = "constrained" if use_constrained else "free"
+                    label_roi = "9-ROI avg" if use_multi_roi else "single ROI"
+
                     dc_state["sd2_fit"] = {
                         "coeffs": [float(a_), float(b_), float(c_)],
                         "formula": f"σ² = {a_:.4g}·k² + {b_:.4g}·k + {c_:.4g}",
                         "latex_formula": rf"\sigma² = {a_:.4g}\,k² + {b_:.4g}\,k + {c_:.4g}",
                         "r2": float(r2_sd) if not np.isnan(r2_sd) else None,
                         "sd2": [None if not np.isfinite(v) else float(v) for v in y_arr],
-                        **interval_info
+                        "detrended": use_detrend,
+                        "constrained": use_constrained,
+                        "multi_roi": use_multi_roi,
+                        "loss": fit_loss,
+                        "label": f"{label_detrend} / {label_fit} / {label_roi} / loss={fit_loss}",
+                        **interval_info,
                     }
                     st.session_state["detector_conversion"] = dc_state
             except NotImplementedError as nie:
                 st.error(str(nie))
             except Exception as e:
-                st.error(f"SD_norm fit failed: {e}")
+                st.error(f"σ² fit failed: {e}")
 
     # Render cached SD² fit
     cached_sd = dc_state.get("sd2_fit")
     if isinstance(cached_sd, dict) and cached_sd.get("coeffs"):
+        if cached_sd.get("label"):
+            st.caption(f"Last fit: {cached_sd['label']}")
         st.latex(cached_sd.get("latex_formula")) if cached_sd.get("latex_formula") else st.write(cached_sd.get("formula", ""))
         if cached_sd.get("r2") is not None:
             st.write(f"R² = {cached_sd['r2']:.4f}")
-        
+
         # Dominance interval feedback
         abc_positive = cached_sd.get("abc_positive")
         k_min, k_max = cached_sd.get("k_min"), cached_sd.get("k_max")
         interval_exists = cached_sd.get("dominance_interval_exists")
         interval_degenerate = cached_sd.get("dominance_interval_degenerate")
-        
+
         if not abc_positive:
             st.info("Coefficients not all positive; dominance interval not computed.")
         elif k_min and k_max and k_min > 0 and k_max > 0:
@@ -660,33 +808,31 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
                 st.latex(r"b^2 \le a\,c\quad\text{(no middle-term dominance interval)}")
         else:
             st.info("Dominance interval bounds could not be determined.")
-        
 
         # Plot σ² components
         try:
-            k_arr, y_arr = np.array(kerma_vals, dtype=float), np.array(cached_sd.get("sd2", []), dtype=float)
+            k_arr = np.array(kerma_vals, dtype=float)
+            y_arr = np.array(cached_sd.get("sd2", []), dtype=float)
             a_, b_, c_ = np.array(cached_sd["coeffs"], dtype=float)
-            
-            # Generate smooth curve for better visualization
+
             k_smooth = np.linspace(k_arr.min(), k_arr.max(), 200)
             y_fit_smooth = a_ * k_smooth**2 + b_ * k_smooth + c_
-            structural_smooth = a_ * k_smooth**2
-            quantum_smooth = b_ * k_smooth
-            
+
             fig3, ax3 = plt.subplots(figsize=(10, 6))
             ax3.scatter(k_arr, y_arr, label='σ² data', color='black', s=50, zorder=5)
             ax3.plot(k_smooth, y_fit_smooth, color='C3', linewidth=2, label='Total: $a·k² + b·k + c$')
-            ax3.plot(k_smooth, structural_smooth, '--', color='C0', linewidth=1.5, label=f'Structural: ${a_:.4g}·k²$')
-            ax3.plot(k_smooth, quantum_smooth, '--', color='C2', linewidth=1.5, label=f'Quantum: ${b_:.4g}·k$')
+            ax3.plot(k_smooth, a_ * k_smooth**2, '--', color='C0', linewidth=1.5, label=f'Structural: ${a_:.4g}·k²$')
+            ax3.plot(k_smooth, b_ * k_smooth, '--', color='C2', linewidth=1.5, label=f'Quantum: ${b_:.4g}·k$')
             ax3.axhline(c_, linestyle='--', color='C1', linewidth=1.5, label=f'Electronic: ${c_:.4g}$')
             ax3.set_xlabel(r"$k$ (μGy)", fontsize=12)
             ax3.set_ylabel(r"$\sigma²$", fontsize=12)
+            ax3.set_title(f"σ² vs Kerma — {cached_sd.get('label', '')}")
             ax3.legend(loc='best', fontsize=9)
             ax3.grid(True, alpha=0.3)
             st.pyplot(fig3)
         except Exception as e:
             st.warning(f"Could not display cached SD fit: {e}")
-    
+
     # CSV export
     output = io.StringIO()
     writer = csv.writer(output)

@@ -193,40 +193,6 @@ def _plot_detrending_3d(roi_original, roi_detrended, filename=""):
     st.pyplot(fig)
 
 
-def _bootstrap_variance(detrended_roi, n_bootstrap=500):
-    """Estimate variance of detrended ROI using bootstrap resampling.
-    
-    Treats the pure noise ROI as a "bag of marbles" and repeatedly samples
-    with replacement to robustly estimate the variance.
-    
-    Args:
-        detrended_roi: 2D array of detrended (pure noise) pixel values
-        n_bootstrap: Number of bootstrap iterations (default 500)
-    
-    Returns:
-        Bootstrap variance estimate (median of bootstrap variances)
-    """
-    # Flatten and remove invalid values
-    pixels = detrended_roi.flatten()
-    valid_pixels = pixels[np.isfinite(pixels)]
-    
-    if len(valid_pixels) < 2:
-        return np.nan
-    
-    n = len(valid_pixels)
-    bootstrap_variances = []
-    
-    # Bootstrap resampling
-    for _ in range(n_bootstrap):
-        # Sample n pixels with replacement
-        sample = np.random.choice(valid_pixels, size=n, replace=True)
-        # Calculate variance of this sample
-        bootstrap_variances.append(np.var(sample, ddof=1))
-    
-    # Return variance of bootstrap variances (accurate measure of uncertainty)
-    return float(np.var(bootstrap_variances, ddof=1))
-
-
 def _fit_mpv_vs_kerma(kerma_vals, mpv_vals, method, poly_degree=2):
     """Fit MPV vs kerma using specified method. Returns fit values, formula, R², and coefficients."""
     k, m = np.array(kerma_vals, dtype=float), np.array(mpv_vals, dtype=float)
@@ -424,6 +390,43 @@ def _multi_roi_variance(img_array, roi_h=100, roi_w=100, shift=10, detrend=False
     return mean_sd2, sd2_list, central_roi
 
 
+def _moving_roi_variance(img_array, roi_h=100, roi_w=100, detrend=False):
+    """Compute σ² via non-overlapping moving ROI across 80% central area.
+
+    Extracts the central 80% of the image area (linear dimension scale =
+    sqrt(0.8)), then tiles it with non-overlapping roi_h × roi_w windows.
+    Each window's variance is computed (optionally after planar detrending).
+
+    Returns:
+        (mean_sd2, sd2_array, n_rois, grid_shape)
+    """
+    H, W = img_array.shape
+    scale = np.sqrt(0.8)
+    cH, cW = int(np.floor(H * scale)), int(np.floor(W * scale))
+    y0, x0 = (H - cH) // 2, (W - cW) // 2
+    central = img_array[y0:y0 + cH, x0:x0 + cW]
+
+    n_rows = cH // roi_h
+    n_cols = cW // roi_w
+    if n_rows < 1 or n_cols < 1:
+        raise ValueError(
+            f"80% central area ({cH}\u00d7{cW}) too small for "
+            f"{roi_h}\u00d7{roi_w} non-overlapping ROI"
+        )
+
+    sd2_list = []
+    for r in range(n_rows):
+        for c in range(n_cols):
+            roi = central[r * roi_h:(r + 1) * roi_h, c * roi_w:(c + 1) * roi_w]
+            if detrend:
+                roi = _detrend_roi(roi)
+            sd2_list.append(float(np.nanvar(roi, ddof=1)))
+
+    sd2_arr = np.array(sd2_list)
+    mean_sd2 = float(np.nanmean(sd2_arr))
+    return mean_sd2, sd2_arr, len(sd2_list), (n_rows, n_cols)
+
+
 def _compute_dominance_interval(a, b, c):
     """Compute quantum noise dominance interval from fit coefficients.
     
@@ -584,7 +587,7 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
             mpv, sd, roi = _central_roi_stats(arr)
             results["files"].append({
                 "filename": fname, "kerma": float(kerma_val), "ei": float(ei_val),
-                "mpv": float(mpv), "sd": float(sd), "roi": roi
+                "mpv": float(mpv), "sd": float(sd), "roi": roi, "array": arr
             })
             st.write(f"MPV: {mpv:.3f}, σ: {sd:.3f}")
         except Exception as e:
@@ -665,13 +668,19 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
     st.write("### Noise: σ² vs Kerma")
     st.caption("Compute σ on linearized (kerma-domain) ROI, square it (σ²), then fit σ² = a·k² + b·k + c.")
 
-    col_opt1, col_opt2, col_opt3 = st.columns(3)
+    col_opt1, col_opt2, col_opt3, col_opt4 = st.columns(4)
     with col_opt1:
         use_detrend = st.checkbox("Apply planar detrending (heel / dome removal)", value=False, key="sd2_detrend")
     with col_opt2:
         use_constrained = st.checkbox("Non-negative constrained fit (a,b,c ≥ 0)", value=True, key="sd2_constrained")
     with col_opt3:
         use_multi_roi = st.checkbox("Multi-ROI averaging (9 × 100×100)", value=False, key="sd2_multi_roi")
+    with col_opt4:
+        use_moving_roi = st.checkbox("Moving-ROI variance (100×100, 80% area)", value=False, key="sd2_moving_roi")
+
+    if use_multi_roi and use_moving_roi:
+        st.warning("Multi-ROI and Moving-ROI cannot be used simultaneously. Using Moving-ROI.")
+        use_multi_roi = False
 
     # Loss function depends on detrending: detrend ON → pure L2; OFF → robust soft_l1
     fit_loss = 'linear' if use_detrend else 'soft_l1'
@@ -685,62 +694,77 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
             try:
                 inv_fn = _build_inverse_fn(conv)
                 sd2_vals = []
-                bootstrap_vars = []
+                moving_roi_distributions = []
                 plane_shown = False
 
                 for rec in results["files"]:
                     if rec.get("roi") is None:
                         st.error(f"Missing ROI data for {rec['filename']}")
                         return None
-                    kerma_img = np.asarray(inv_fn(rec["roi"]), dtype=float)
-                    kerma_img[~np.isfinite(kerma_img)] = np.nan
 
-                    if use_multi_roi:
-                        # 9-ROI averaging: central + 8 shifted by 10px
-                        mean_sd2, _, central_roi = _multi_roi_variance(
-                            kerma_img, detrend=use_detrend
+                    if use_moving_roi:
+                        full_arr = rec.get("array")
+                        if full_arr is None:
+                            st.error(f"Full image not available for {rec['filename']}")
+                            return None
+                        kerma_full = np.asarray(inv_fn(full_arr), dtype=float)
+                        kerma_full[~np.isfinite(kerma_full)] = np.nan
+                        mean_sd2, sd2_arr, n_rois, grid_shape = _moving_roi_variance(
+                            kerma_full, detrend=use_detrend
                         )
                         sd2_vals.append(mean_sd2)
-                        # Bootstrap on the central ROI for weighting
-                        noise_roi = _detrend_roi(central_roi) if use_detrend else central_roi
-                        boot_var = _bootstrap_variance(noise_roi, n_bootstrap=500)
-                        bootstrap_vars.append(boot_var)
-                        # Show detrending plane for first image if detrending
-                        if use_detrend and not plane_shown:
-                            _, _, raw_central = _central_roi_stats(kerma_img)
-                            _plot_detrending_3d(raw_central, _detrend_roi(raw_central), filename=rec["filename"])
-                            plane_shown = True
+                        moving_roi_distributions.append({
+                            "filename": rec["filename"],
+                            "sd2_values": sd2_arr.tolist(),
+                            "n_rois": n_rois,
+                            "grid_shape": list(grid_shape),
+                            "mean_sd2": mean_sd2,
+                        })
+                        st.caption(
+                            f"{rec['filename']}: {n_rois} ROIs "
+                            f"({grid_shape[0]}\u00d7{grid_shape[1]} grid), "
+                            f"mean \u03c3\u00b2 = {mean_sd2:.4g}"
+                        )
                     else:
-                        _, _, roi_kerma = _central_roi_stats(kerma_img)
+                        kerma_img = np.asarray(inv_fn(rec["roi"]), dtype=float)
+                        kerma_img[~np.isfinite(kerma_img)] = np.nan
 
-                        if use_detrend:
-                            roi_noise = _detrend_roi(roi_kerma)
-                            if not plane_shown:
-                                _plot_detrending_3d(roi_kerma, roi_noise, filename=rec["filename"])
+                        if use_multi_roi:
+                            # 9-ROI averaging: central + 8 shifted by 10px
+                            mean_sd2, _, central_roi = _multi_roi_variance(
+                                kerma_img, detrend=use_detrend
+                            )
+                            sd2_vals.append(mean_sd2)
+                            # Show detrending plane for first image if detrending
+                            if use_detrend and not plane_shown:
+                                _, _, raw_central = _central_roi_stats(kerma_img)
+                                _plot_detrending_3d(raw_central, _detrend_roi(raw_central), filename=rec["filename"])
                                 plane_shown = True
                         else:
-                            roi_noise = roi_kerma
+                            _, _, roi_kerma = _central_roi_stats(kerma_img)
 
-                        boot_var = _bootstrap_variance(roi_noise, n_bootstrap=500)
-                        bootstrap_vars.append(boot_var)
+                            if use_detrend:
+                                roi_noise = _detrend_roi(roi_kerma)
+                                if not plane_shown:
+                                    _plot_detrending_3d(roi_kerma, roi_noise, filename=rec["filename"])
+                                    plane_shown = True
+                            else:
+                                roi_noise = roi_kerma
 
-                        std_kerma = float(np.nanstd(roi_noise))
-                        sd2_vals.append(std_kerma**2)
+                            sd2_vals.append(float(np.nanvar(roi_noise, ddof=1)))
 
                 k_arr = np.array(kerma_vals, dtype=float)
                 y_arr = np.array(sd2_vals, dtype=float)
-                bv_arr = np.array(bootstrap_vars, dtype=float)
 
-                mask = (np.isfinite(k_arr) & np.isfinite(y_arr)
-                        & np.isfinite(bv_arr) & (k_arr > 0) & (bv_arr > 0))
+                mask = np.isfinite(k_arr) & np.isfinite(y_arr) & (k_arr > 0)
                 if mask.sum() < 3:
                     st.error("Need at least 3 valid points to fit a quadratic.")
                 else:
                     k_v, y_v = k_arr[mask], y_arr[mask]
-                    w = 1.0 / bv_arr[mask]
+                    w = 1.0 / y_v
 
                     if use_constrained:
-                        st.info(f"Non-negative constrained fit (loss={fit_loss}) with bootstrap weights.")
+                        st.info(f"Non-negative constrained fit (loss={fit_loss}), weights = 1/σ².")
                         a_, b_, c_, ok_msg, warn_msg = _constrained_weighted_fit(k_v, y_v, w, loss=fit_loss)
                         if a_ is None:
                             st.error(warn_msg)
@@ -762,7 +786,8 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
 
                     label_detrend = "detrended" if use_detrend else "raw"
                     label_fit = "constrained" if use_constrained else "free"
-                    label_roi = "9-ROI avg" if use_multi_roi else "single ROI"
+                    label_roi = ("moving-ROI 80%" if use_moving_roi
+                                 else ("9-ROI avg" if use_multi_roi else "single ROI"))
 
                     dc_state["sd2_fit"] = {
                         "coeffs": [float(a_), float(b_), float(c_)],
@@ -773,6 +798,8 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
                         "detrended": use_detrend,
                         "constrained": use_constrained,
                         "multi_roi": use_multi_roi,
+                        "moving_roi": use_moving_roi,
+                        "moving_roi_distributions": moving_roi_distributions if use_moving_roi else None,
                         "loss": fit_loss,
                         "label": f"{label_detrend} / {label_fit} / {label_roi} / loss={fit_loss}",
                         **interval_info,
@@ -834,6 +861,46 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
             st.pyplot(fig3)
         except Exception as e:
             st.warning(f"Could not display cached SD fit: {e}")
+
+        # Histogram of moving-ROI local variances
+        if cached_sd.get("moving_roi") and cached_sd.get("moving_roi_distributions"):
+            st.write("#### Local σ² Distribution (Moving-ROI)")
+            dists = cached_sd["moving_roi_distributions"]
+            n_files = len(dists)
+            n_cols_hist = min(n_files, 4)
+            n_rows_hist = (n_files + n_cols_hist - 1) // n_cols_hist
+            fig_hist, axes = plt.subplots(
+                n_rows_hist, n_cols_hist,
+                figsize=(5 * n_cols_hist, 4 * n_rows_hist), squeeze=False
+            )
+            for i, dist_info in enumerate(dists):
+                ax = axes[i // n_cols_hist, i % n_cols_hist]
+                vals = np.array(dist_info["sd2_values"])
+                ax.hist(vals, bins='auto', edgecolor='black', alpha=0.7, color='C0')
+                ax.axvline(dist_info["mean_sd2"], color='red', linestyle='--',
+                           linewidth=1.5, label=f'mean = {dist_info["mean_sd2"]:.4g}')
+                std_val = float(np.std(vals))
+                ax.axvline(dist_info["mean_sd2"] - std_val, color='orange',
+                           linestyle=':', linewidth=1, label=f'±1σ ({std_val:.3g})')
+                ax.axvline(dist_info["mean_sd2"] + std_val, color='orange',
+                           linestyle=':', linewidth=1)
+                ax.set_title(dist_info["filename"], fontsize=9)
+                ax.set_xlabel("σ² (per ROI)")
+                ax.set_ylabel("Count")
+                ax.legend(fontsize=7)
+                n_rois = dist_info["n_rois"]
+                grid = dist_info["grid_shape"]
+                ax.text(0.95, 0.95, f"N={n_rois} ({grid[0]}×{grid[1]})",
+                        transform=ax.transAxes, ha='right', va='top', fontsize=8,
+                        bbox=dict(boxstyle='round,pad=0.3', fc='white', alpha=0.8))
+            for i in range(n_files, n_rows_hist * n_cols_hist):
+                axes[i // n_cols_hist, i % n_cols_hist].set_visible(False)
+            fig_hist.suptitle(
+                "Per-ROI variance distribution (non-overlapping 100×100, 80% central area)",
+                fontsize=11
+            )
+            fig_hist.tight_layout()
+            st.pyplot(fig_hist)
 
     # CSV export
     output = io.StringIO()

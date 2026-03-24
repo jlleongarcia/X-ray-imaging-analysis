@@ -150,6 +150,55 @@ def _detrend_roi(roi):
     return detrended
 
 
+def _detrend_from_area(full_img, area_fraction=0.80):
+    """Fit a detrending plane to the central *area_fraction* of the image and
+    subtract it from the entire image.
+
+    Using a larger fitting region increases spatial leverage for estimating the
+    heel-effect / geometric-dome gradient compared to fitting a small 100\u00d7100 ROI.
+
+    Args:
+        full_img: 2D array (e.g. full kerma-domain image).
+        area_fraction: Fraction of total image *area* used for fitting (0.1\u20131.0).
+            Linear dimension scale = sqrt(area_fraction).
+
+    Returns:
+        (detrended_full_img, (a, b, c), (y0, x0, cH, cW))
+    """
+    H, W = full_img.shape
+    if area_fraction >= 1.0:
+        cH, cW, y0, x0 = H, W, 0, 0
+    else:
+        scale = np.sqrt(area_fraction)
+        cH = int(np.floor(H * scale))
+        cW = int(np.floor(W * scale))
+        y0 = (H - cH) // 2
+        x0 = (W - cW) // 2
+
+    # Coordinates in absolute pixel space so the plane extends correctly
+    y_fit, x_fit = np.meshgrid(
+        np.arange(y0, y0 + cH), np.arange(x0, x0 + cW), indexing='ij'
+    )
+    z_flat = full_img[y0:y0 + cH, x0:x0 + cW].flatten()
+    x_flat = x_fit.flatten()
+    y_flat = y_fit.flatten()
+
+    valid = np.isfinite(z_flat)
+    if valid.sum() < 3:
+        return full_img, (0.0, 0.0, 0.0), (y0, x0, cH, cW)
+
+    X_design = np.column_stack([x_flat[valid], y_flat[valid], np.ones(valid.sum())])
+    coeffs, _, _, _ = np.linalg.lstsq(X_design, z_flat[valid], rcond=None)
+    a, b, c_val = coeffs
+
+    # Plane over the FULL image (same absolute coordinate system)
+    y_full, x_full = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+    plane = a * x_full + b * y_full + c_val
+
+    detrended = full_img - plane
+    return detrended, (float(a), float(b), float(c_val)), (y0, x0, cH, cW)
+
+
 def _plot_detrending_3d(roi_original, roi_detrended, filename=""):
     """Visualise the fitted detrending plane.
 
@@ -172,7 +221,10 @@ def _plot_detrending_3d(roi_original, roi_detrended, filename=""):
 
     # --- Left: 3D surface of fitted plane only ---
     ax1 = fig.add_subplot(1, 2, 1, projection='3d')
-    surf = ax1.plot_surface(x_coords, y_coords, plane,
+    # Subsample for 3D rendering performance on large fitting regions
+    step = max(1, max(H, W) // 150)
+    surf = ax1.plot_surface(x_coords[::step, ::step], y_coords[::step, ::step],
+                            plane[::step, ::step],
                             cmap='viridis', edgecolor='none', alpha=0.9)
     ax1.set_title(f'Fitted plane (heel / dome)\n{filename}', fontsize=10)
     ax1.set_xlabel('x (px)')
@@ -677,7 +729,17 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
         use_multi_roi = st.checkbox("Multi-ROI averaging (9 × 100×100)", value=False, key="sd2_multi_roi")
     with col_opt4:
         use_moving_roi = st.checkbox("Moving-ROI variance (100×100, 80% area)", value=False, key="sd2_moving_roi")
-
+    detrend_area_pct = 80
+    if use_detrend:
+        detrend_area_pct = st.slider(
+            "Detrending area (% of image area)",
+            min_value=10, max_value=100, value=80, step=5,
+            key="sd2_detrend_area",
+            help="Fraction of the image area used to fit the detrending plane. "
+                 "Larger areas give better spatial leverage for gradient estimation "
+                 "but may include edge artefacts near 100%."
+        )
+    detrend_area_frac = detrend_area_pct / 100.0
     if use_multi_roi and use_moving_roi:
         st.warning("Multi-ROI and Moving-ROI cannot be used simultaneously. Using Moving-ROI.")
         use_multi_roi = False
@@ -695,63 +757,98 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
                 inv_fn = _build_inverse_fn(conv)
                 sd2_vals = []
                 moving_roi_distributions = []
-                plane_shown = False
 
                 for rec in results["files"]:
                     if rec.get("roi") is None:
                         st.error(f"Missing ROI data for {rec['filename']}")
                         return None
 
-                    if use_moving_roi:
-                        full_arr = rec.get("array")
+                    full_arr = rec.get("array")
+
+                    if use_detrend:
+                        # --- Global detrending in KERMA frame ---
+                        # The plane must be fitted in kerma domain, not pixel
+                        # domain.  For a log detector response the inverse is
+                        # exponential, so a pixel-space plane would become a
+                        # non-planar surface in kerma space.  Converting first
+                        # ensures the detrending is physically correct.
                         if full_arr is None:
                             st.error(f"Full image not available for {rec['filename']}")
                             return None
                         kerma_full = np.asarray(inv_fn(full_arr), dtype=float)
                         kerma_full[~np.isfinite(kerma_full)] = np.nan
-                        mean_sd2, sd2_arr, n_rois, grid_shape = _moving_roi_variance(
-                            kerma_full, detrend=use_detrend
+                        detrended_full, plane_abc, fit_bounds = _detrend_from_area(
+                            kerma_full, detrend_area_frac
                         )
-                        sd2_vals.append(mean_sd2)
-                        moving_roi_distributions.append({
-                            "filename": rec["filename"],
-                            "sd2_values": sd2_arr.tolist(),
-                            "n_rois": n_rois,
-                            "grid_shape": list(grid_shape),
-                            "mean_sd2": mean_sd2,
-                        })
-                        st.caption(
-                            f"{rec['filename']}: {n_rois} ROIs "
-                            f"({grid_shape[0]}\u00d7{grid_shape[1]} grid), "
-                            f"mean \u03c3\u00b2 = {mean_sd2:.4g}"
+                        y0f, x0f, cHf, cWf = fit_bounds
+                        fit_region = kerma_full[y0f:y0f + cHf, x0f:x0f + cWf]
+                        _plot_detrending_3d(
+                            fit_region, _detrend_roi(fit_region),
+                            filename=f"{rec['filename']} (detrend area: {detrend_area_pct}%)"
                         )
-                    else:
-                        kerma_img = np.asarray(inv_fn(rec["roi"]), dtype=float)
-                        kerma_img[~np.isfinite(kerma_img)] = np.nan
 
-                        if use_multi_roi:
-                            # 9-ROI averaging: central + 8 shifted by 10px
-                            mean_sd2, _, central_roi = _multi_roi_variance(
-                                kerma_img, detrend=use_detrend
+                        if use_moving_roi:
+                            mean_sd2, sd2_arr, n_rois, grid_shape = _moving_roi_variance(
+                                detrended_full, detrend=False
                             )
                             sd2_vals.append(mean_sd2)
-                            # Show detrending plane for first image if detrending
-                            if use_detrend and not plane_shown:
-                                _, _, raw_central = _central_roi_stats(kerma_img)
-                                _plot_detrending_3d(raw_central, _detrend_roi(raw_central), filename=rec["filename"])
-                                plane_shown = True
+                            moving_roi_distributions.append({
+                                "filename": rec["filename"],
+                                "sd2_values": sd2_arr.tolist(),
+                                "n_rois": n_rois,
+                                "grid_shape": list(grid_shape),
+                                "mean_sd2": mean_sd2,
+                            })
+                            st.caption(
+                                f"{rec['filename']}: {n_rois} ROIs "
+                                f"({grid_shape[0]}\u00d7{grid_shape[1]} grid), "
+                                f"mean \u03c3\u00b2 = {mean_sd2:.4g}"
+                            )
+                        elif use_multi_roi:
+                            mean_sd2, _, _ = _multi_roi_variance(
+                                detrended_full, detrend=False
+                            )
+                            sd2_vals.append(mean_sd2)
                         else:
-                            _, _, roi_kerma = _central_roi_stats(kerma_img)
+                            _, _, roi_kerma = _central_roi_stats(detrended_full)
+                            sd2_vals.append(float(np.nanvar(roi_kerma, ddof=1)))
 
-                            if use_detrend:
-                                roi_noise = _detrend_roi(roi_kerma)
-                                if not plane_shown:
-                                    _plot_detrending_3d(roi_kerma, roi_noise, filename=rec["filename"])
-                                    plane_shown = True
+                    else:
+                        # --- No detrending ---
+                        if use_moving_roi:
+                            if full_arr is None:
+                                st.error(f"Full image not available for {rec['filename']}")
+                                return None
+                            kerma_full = np.asarray(inv_fn(full_arr), dtype=float)
+                            kerma_full[~np.isfinite(kerma_full)] = np.nan
+                            mean_sd2, sd2_arr, n_rois, grid_shape = _moving_roi_variance(
+                                kerma_full, detrend=False
+                            )
+                            sd2_vals.append(mean_sd2)
+                            moving_roi_distributions.append({
+                                "filename": rec["filename"],
+                                "sd2_values": sd2_arr.tolist(),
+                                "n_rois": n_rois,
+                                "grid_shape": list(grid_shape),
+                                "mean_sd2": mean_sd2,
+                            })
+                            st.caption(
+                                f"{rec['filename']}: {n_rois} ROIs "
+                                f"({grid_shape[0]}\u00d7{grid_shape[1]} grid), "
+                                f"mean \u03c3\u00b2 = {mean_sd2:.4g}"
+                            )
+                        else:
+                            kerma_img = np.asarray(inv_fn(rec["roi"]), dtype=float)
+                            kerma_img[~np.isfinite(kerma_img)] = np.nan
+
+                            if use_multi_roi:
+                                mean_sd2, _, _ = _multi_roi_variance(
+                                    kerma_img, detrend=False
+                                )
+                                sd2_vals.append(mean_sd2)
                             else:
-                                roi_noise = roi_kerma
-
-                            sd2_vals.append(float(np.nanvar(roi_noise, ddof=1)))
+                                _, _, roi_kerma = _central_roi_stats(kerma_img)
+                                sd2_vals.append(float(np.nanvar(roi_kerma, ddof=1)))
 
                 k_arr = np.array(kerma_vals, dtype=float)
                 y_arr = np.array(sd2_vals, dtype=float)
@@ -784,18 +881,19 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
 
                     interval_info = _compute_dominance_interval(a_, b_, c_)
 
-                    label_detrend = "detrended" if use_detrend else "raw"
+                    label_detrend = f"detrended ({detrend_area_pct}%)" if use_detrend else "raw"
                     label_fit = "constrained" if use_constrained else "free"
                     label_roi = ("moving-ROI 80%" if use_moving_roi
                                  else ("9-ROI avg" if use_multi_roi else "single ROI"))
 
                     dc_state["sd2_fit"] = {
                         "coeffs": [float(a_), float(b_), float(c_)],
-                        "formula": f"σ² = {a_:.4g}·k² + {b_:.4g}·k + {c_:.4g}",
-                        "latex_formula": rf"\sigma² = {a_:.4g}\,k² + {b_:.4g}\,k + {c_:.4g}",
+                        "formula": f"\u03c3\u00b2 = {a_:.4g}\u00b7k\u00b2 + {b_:.4g}\u00b7k + {c_:.4g}",
+                        "latex_formula": rf"\sigma^{{2}} = {a_:.4g}\,k^{{2}} + {b_:.4g}\,k + {c_:.4g}",
                         "r2": float(r2_sd) if not np.isnan(r2_sd) else None,
                         "sd2": [None if not np.isfinite(v) else float(v) for v in y_arr],
                         "detrended": use_detrend,
+                        "detrend_area_pct": detrend_area_pct if use_detrend else None,
                         "constrained": use_constrained,
                         "multi_roi": use_multi_roi,
                         "moving_roi": use_moving_roi,

@@ -221,34 +221,44 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         image_arrays = [image_array]
         filenames = ["Current Image"]
 
-    # Initialize session state
-    for key, default in [('mtf_roi_center_x', 50), ('mtf_roi_center_y', 50), 
-                         ('mtf_roi_width', 20), ('mtf_roi_height', 20)]:
-        if key not in st.session_state:
-            st.session_state[key] = default
-
-    # Use first image dimensions for ROI selection
-    h, w = image_arrays[0].shape
 
     # ROI Selection
     st.markdown("### Edge ROI Selection")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.slider("ROI Center X (%)", 0, 100, key='mtf_roi_center_x', on_change=_bump_mtf_refresh)
-        st.slider("ROI Width (%)", 5, 100, key='mtf_roi_width', on_change=_bump_mtf_refresh)
-    with col2:
-        st.slider("ROI Center Y (%)", 0, 100, key='mtf_roi_center_y', on_change=_bump_mtf_refresh)
-        st.slider("ROI Height (%)", 5, 100, key='mtf_roi_height', on_change=_bump_mtf_refresh)
+    roi_params = []
+    if comparison_mode and len(image_arrays) == 2:
+        colA, colB = st.columns(2)
+        slider_cols = [colA, colB]
+    else:
+        slider_cols = [st.container() for _ in image_arrays]
 
-    # Extract ROI coordinates (same for all images)
-    center_x_px = int(w * st.session_state['mtf_roi_center_x'] / 100)
-    center_y_px = int(h * st.session_state['mtf_roi_center_y'] / 100)
-    width_px = max(10, int(w * st.session_state['mtf_roi_width'] / 100))
-    height_px = max(10, int(h * st.session_state['mtf_roi_height'] / 100))
-
-    x0, x1 = max(0, center_x_px - width_px // 2), min(w, center_x_px + width_px // 2)
-    y0, y1 = max(0, center_y_px - height_px // 2), min(h, center_y_px + height_px // 2)
+    for idx, img in enumerate(image_arrays):
+        h, w = img.shape
+        suffix = f"_{idx+1}" if comparison_mode else ""
+        # Unique keys for each image
+        keys = {
+            'center_x': f'mtf_roi_center_x{suffix}',
+            'center_y': f'mtf_roi_center_y{suffix}',
+            'width': f'mtf_roi_width{suffix}',
+            'height': f'mtf_roi_height{suffix}'
+        }
+        # Initialize session state for each image
+        for k, key in keys.items():
+            if key not in st.session_state:
+                st.session_state[key] = 50 if 'center' in k else 20
+        with slider_cols[idx]:
+            st.markdown(f"**ROI for {filenames[idx]}**")
+            st.slider("ROI Center X (%)", 0, 100, key=keys['center_x'], on_change=_bump_mtf_refresh)
+            st.slider("ROI Center Y (%)", 0, 100, key=keys['center_y'], on_change=_bump_mtf_refresh)
+            st.slider("ROI Width (%)", 5, 100, key=keys['width'], on_change=_bump_mtf_refresh)
+            st.slider("ROI Height (%)", 5, 100, key=keys['height'], on_change=_bump_mtf_refresh)
+        # Calculate pixel coordinates for ROI
+        center_x_px = int(w * st.session_state[keys['center_x']] / 100)
+        center_y_px = int(h * st.session_state[keys['center_y']] / 100)
+        width_px = max(10, int(w * st.session_state[keys['width']] / 100))
+        height_px = max(10, int(h * st.session_state[keys['height']] / 100))
+        x0, x1 = max(0, center_x_px - width_px // 2), min(w, center_x_px + width_px // 2)
+        y0, y1 = max(0, center_y_px - height_px // 2), min(h, center_y_px + height_px // 2)
+        roi_params.append({'x0': x0, 'x1': x1, 'y0': y0, 'y1': y1, 'w': w, 'h': h, 'width_px': width_px, 'height_px': height_px, 'center_x_px': center_x_px, 'center_y_px': center_y_px})
 
     # Pixel spacing
     pixel_spacing_avg = ((pixel_spacing_row + pixel_spacing_col) / 2.0 
@@ -261,61 +271,52 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     # Show ROI Preview for all images
     with st.expander("🔍 Edge ROI Selection Preview", expanded=False):
         st.caption("Preview of the selected ROI on each image where MTF will be analyzed")
-        
         # Create columns for each image preview
         if len(image_arrays) == 1:
             preview_cols = [st.container()]
         else:
             preview_cols = st.columns(len(image_arrays))
-        
         for idx, (img, fname) in enumerate(zip(image_arrays, filenames)):
+            roi = roi_params[idx]
+            h, w = roi['h'], roi['w']
+            x0, x1, y0, y1 = roi['x0'], roi['x1'], roi['y0'], roi['y1']
+            width_px, height_px = roi['width_px'], roi['height_px']
             with preview_cols[idx] if len(image_arrays) > 1 else preview_cols[0]:
                 st.markdown(f"**{fname}**")
-                
                 # Create preview with ROI overlay
                 img_normalized = (img - img.min()) / (img.max() - img.min() + 1e-10)
-                
-                # Create RGB image for overlay
                 img_rgb = np.stack([img_normalized] * 3, axis=-1)
-                
-                # Draw ROI rectangle (red semi-transparent overlay)
                 img_with_roi = img_rgb.copy()
-                
-                # Draw rectangle borders (thicker)
                 border_thickness = max(2, min(h, w) // 200)
-                
                 # Top and bottom borders
                 img_with_roi[max(0, y0-border_thickness):y0, x0:x1, 0] = 1.0  # Red
                 img_with_roi[max(0, y0-border_thickness):y0, x0:x1, 1:] = 0.0
                 img_with_roi[y1:min(h, y1+border_thickness), x0:x1, 0] = 1.0
                 img_with_roi[y1:min(h, y1+border_thickness), x0:x1, 1:] = 0.0
-                
                 # Left and right borders
                 img_with_roi[y0:y1, max(0, x0-border_thickness):x0, 0] = 1.0
                 img_with_roi[y0:y1, max(0, x0-border_thickness):x0, 1:] = 0.0
                 img_with_roi[y0:y1, x1:min(w, x1+border_thickness), 0] = 1.0
                 img_with_roi[y0:y1, x1:min(w, x1+border_thickness), 1:] = 0.0
-                
                 # Add semi-transparent red tint inside ROI
                 alpha = 0.3
                 img_with_roi[y0:y1, x0:x1, 0] = img_with_roi[y0:y1, x0:x1, 0] * (1 - alpha) + alpha
-                
                 st.image(img_with_roi, caption=f"ROI: {width_px}×{height_px} px", use_container_width=True)
                 st.caption(f"Position: ({x0}, {y0}) to ({x1}, {y1})")
+
 
     # Calculate MTF
     st.markdown("---")
     if st.button("Calculate MTF", key="mtf_calculate_button"):
         all_mtf_results = []
         with st.spinner(f"Calculating MTF for {len(image_arrays)} image(s)..."):
-            for img, fname in zip(image_arrays, filenames):
-                edge_roi = img[y0:y1, x0:x1]
+            for idx, (img, fname) in enumerate(zip(image_arrays, filenames)):
+                roi = roi_params[idx]
+                edge_roi = img[roi['y0']:roi['y1'], roi['x0']:roi['x1']]
                 mtf_result = calculate_mtf_metrics(edge_roi, pixel_spacing_avg)
-                
                 if "MTF_Status" not in mtf_result or "Error" not in mtf_result.get("MTF_Status", ""):
                     mtf_result['filename'] = fname
                     all_mtf_results.append(mtf_result)
-
         if not all_mtf_results:
             st.error("No MTF results were successfully calculated.")
         else:

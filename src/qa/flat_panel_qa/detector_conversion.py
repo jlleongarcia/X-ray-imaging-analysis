@@ -508,6 +508,132 @@ def _compute_dominance_interval(a, b, c):
         "dominance_interval_degenerate": (bool(interval_degenerate) if interval_degenerate is not None else None)
     }
 
+def _explicit_noise_decomposition(images, k0, roi_h=100, roi_w=100,
+                                   detrend=True, area_fraction=0.80):
+    """Explicit noise decomposition following Monnin et al. 2014.
+
+    Pixel-by-pixel method within the central ROI:
+
+    1. (Optional) Detrend each full frame in kerma domain.
+    2. Extract central roi_h×roi_w ROI from each of N frames.
+    3. For pixel (i,j), compute the mean across N ROIs:
+       mean_roi(i,j) = (1/N) Σ_n roi_n(i,j)
+    4. Divide each ROI by the pixel-wise mean → N division images:
+       div_n(i,j) = roi_n(i,j) / mean_roi(i,j)
+    5. Compute spatial variance of each division image → S²_div,n
+    6. Average: S²_div = (1/N) Σ_n S²_div,n
+    7. Bessel correction: S²_stoch_rel = N/(N-1) · S²_div
+    8. Convert to absolute: S²_stoch = S²_stoch_rel × ⟨mean_roi⟩²
+    9. Total variance: S² = mean of Var(roi_n) across n
+    10. Fixed-pattern: S²_fp = S² - S²_stoch
+
+    Args:
+        images: 3D array (N, H, W) — N kerma-domain full images at the same k0.
+        k0: The kerma value (µGy) at which the images were acquired.
+        roi_h, roi_w: Central ROI dimensions (default 100×100).
+        detrend: Whether to apply planar detrending before ROI extraction.
+        area_fraction: Fraction of image area used for detrending plane fit.
+
+    Returns:
+        dict with decomposition results including relative S²_div.
+    """
+    N = images.shape[0]
+    if N < 2:
+        raise ValueError("Need at least 2 frames for explicit noise decomposition.")
+
+    # --- Step 0: Optional detrending of full images ---
+    processed = np.empty_like(images, dtype=float)
+    for i in range(N):
+        if detrend:
+            processed[i], _, _ = _detrend_from_area(images[i], area_fraction)
+        else:
+            processed[i] = images[i].astype(float)
+
+    # --- Step 1: Extract central ROI from each frame ---
+    H, W = processed.shape[1], processed.shape[2]
+    y0, x0 = (H - roi_h) // 2, (W - roi_w) // 2
+    rois = processed[:, y0:y0 + roi_h, x0:x0 + roi_w]  # (N, roi_h, roi_w)
+
+    # --- Step 2: Pixel-wise mean across N ROIs ---
+    mean_roi = np.nanmean(rois, axis=0)  # (roi_h, roi_w)
+
+    # --- Step 3: Divide each ROI by the pixel-wise mean → N division images ---
+    with np.errstate(divide='ignore', invalid='ignore'):
+        div_images = rois / mean_roi[np.newaxis, :, :]  # (N, roi_h, roi_w)
+    div_images[~np.isfinite(div_images)] = np.nan
+
+    # --- Step 4+5: Spatial variance of each division image, then average ---
+    sd2_div_per_frame = [float(np.nanvar(div_images[i], ddof=1)) for i in range(N)]
+    sd2_div = float(np.mean(sd2_div_per_frame))
+
+    # --- Step 6: Bessel correction → relative stochastic variance ---
+    bessel = N / (N - 1)
+    sd2_stoch_rel = bessel * sd2_div
+
+    # --- Step 7: Convert to absolute units (kerma²) ---
+    mean_signal = float(np.nanmean(mean_roi))
+    sd2_stoch = sd2_stoch_rel * mean_signal ** 2
+
+    # --- Step 8: Total variance per frame (spatial variance of each ROI) ---
+    sd2_per_frame = [float(np.nanvar(rois[i], ddof=1)) for i in range(N)]
+    sd2_total = float(np.mean(sd2_per_frame))
+
+    # --- Step 9: Fixed-pattern by subtraction ---
+    sd2_fp = sd2_total - sd2_stoch
+
+    return {
+        "sd2_total": sd2_total,
+        "sd2_stoch": sd2_stoch,
+        "sd2_stoch_rel": sd2_stoch_rel,
+        "sd2_fp": sd2_fp,
+        "sd2_div": sd2_div,
+        "sd2_div_per_frame": sd2_div_per_frame,
+        "sd2_per_frame": sd2_per_frame,
+        "mean_signal": mean_signal,
+        "n_frames": N,
+        "k0": float(k0),
+    }
+
+
+def _extrapolate_electronic_noise(kerma_levels, sd2_stoch_values, max_kerma=None):
+    """Estimate electronic noise by linear extrapolation of stochastic variance to k→0.
+
+    Follows Monnin et al. 2014 (eq. 10): S²_e = lim_{Q→0} S²_st(Q).
+    Fits S²_stoch = β·k + S²_e using weighted least squares (w = 1/S²_stoch).
+
+    Args:
+        kerma_levels: array of kerma values.
+        sd2_stoch_values: corresponding stochastic variance values.
+        max_kerma: if set, only use points with k ≤ max_kerma for the fit.
+
+    Returns:
+        (sd2_electronic, beta, r2) — intercept, slope, and R².
+    """
+    k = np.array(kerma_levels, dtype=float)
+    y = np.array(sd2_stoch_values, dtype=float)
+
+    mask = np.isfinite(k) & np.isfinite(y) & (k > 0)
+    if max_kerma is not None:
+        mask &= k <= max_kerma
+    k_v, y_v = k[mask], y[mask]
+    if len(k_v) < 2:
+        raise ValueError("Need at least 2 stochastic-variance points for electronic noise extrapolation.")
+
+    w = 1.0 / y_v
+    # Weighted linear fit: y = beta*k + se2
+    W = np.diag(w)
+    A = np.column_stack([k_v, np.ones_like(k_v)])
+    params = np.linalg.lstsq(W @ A, W @ y_v, rcond=None)[0]
+    beta, se2 = float(params[0]), float(params[1])
+
+    y_fit = beta * k_v + se2
+    ss_res = float(np.sum(w * (y_v - y_fit)**2))
+    ss_tot = float(np.sum(w * (y_v - np.average(y_v, weights=w))**2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+
+    return se2, beta, r2
+
+
 def _get_detector_conversion_state() -> dict:
     """Get unified detector conversion state container from session.
 
@@ -516,7 +642,8 @@ def _get_detector_conversion_state() -> dict:
         'fit': {...},
         'results': {...} | None,
         'ei_fit': {...},
-        'sd2_fit': {...}
+        'sd2_fit': {...},
+        'explicit_decomp': {...}
       }
     """
     state = st.session_state.get("detector_conversion")
@@ -526,6 +653,7 @@ def _get_detector_conversion_state() -> dict:
     state.setdefault("results", None)
     state.setdefault("ei_fit", {})
     state.setdefault("sd2_fit", {})
+    state.setdefault("explicit_decomp", {})
     st.session_state["detector_conversion"] = state
     return state
 
@@ -999,6 +1127,247 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
             )
             fig_hist.tight_layout()
             st.pyplot(fig_hist)
+
+    # =====================================================================
+    # Explicit Noise Decomposition (Monnin et al. 2014)
+    # =====================================================================
+    st.markdown("---")
+    st.write("### Explicit Noise Decomposition (Monnin et al. 2014)")
+    st.caption(
+        "Upload N images acquired at the **same kerma level** to separate "
+        "total noise into stochastic (quantum + electronic) and "
+        "fixed-pattern (structural) components via the explicit method.  "
+        "Requires the Detector Response Curve fit above."
+    )
+
+    explicit_files = st.file_uploader(
+        "Upload same-kerma images (RAW/STD)",
+        type=["raw", "RAW", "std", "STD"],
+        accept_multiple_files=True,
+        key="explicit_decomp_uploader",
+    )
+    explicit_kerma = st.number_input(
+        "Kerma level k\u2080 (µGy) for the uploaded images",
+        value=0.0, format="%.4f", key="explicit_k0",
+    )
+
+    col_ed1, col_ed2 = st.columns(2)
+    with col_ed1:
+        explicit_detrend = st.checkbox(
+            "Detrend each frame (heel / dome removal)",
+            value=True, key="explicit_detrend",
+        )
+    with col_ed2:
+        explicit_detrend_area = 80
+        if explicit_detrend:
+            explicit_detrend_area = st.slider(
+                "Detrending area (%)",
+                min_value=10, max_value=100, value=80, step=5,
+                key="explicit_detrend_area",
+            )
+    explicit_detrend_frac = explicit_detrend_area / 100.0
+
+    if st.button("Run explicit noise decomposition", key="run_explicit_decomp"):
+        conv = dc_state.get("fit")
+        if not (isinstance(conv, dict) and conv.get("coeffs")):
+            st.error("Run the Detector Response Curve fit first.")
+        elif not explicit_files or len(explicit_files) < 2:
+            st.error("Upload at least 2 images at the same kerma level.")
+        elif explicit_kerma <= 0:
+            st.error("Kerma level k\u2080 must be > 0.")
+        else:
+            try:
+                inv_fn = _build_inverse_fn(conv)
+
+                # Load all same-kerma images → kerma-domain ROI stack
+                frames = []
+                for ef in explicit_files:
+                    ef_name, ef_bytes = file_name_and_bytes(ef)
+                    arr_e, _, _ = _read_raw_as_square(
+                        ef_bytes, dtype,
+                        little_endian=default_little_endian,
+                        auto_endian_from_dicom=True,
+                    )
+                    kerma_frame = np.asarray(inv_fn(arr_e), dtype=float)
+                    kerma_frame[~np.isfinite(kerma_frame)] = np.nan
+                    frames.append(kerma_frame)
+
+                roi_stack = np.stack(frames, axis=0)  # (N, H, W)
+                st.info(f"Loaded {len(frames)} frames at k\u2080 = {explicit_kerma:.4g} \u00b5Gy")
+
+                decomp = _explicit_noise_decomposition(
+                    roi_stack, explicit_kerma,
+                    detrend=explicit_detrend,
+                    area_fraction=explicit_detrend_frac,
+                )
+
+                # --- Electronic noise: use polynomial sd2_fit stochastic data ---
+                cached_sd = dc_state.get("sd2_fit")
+                se2, beta, r2_e = None, None, None
+                sd2_stoch_at_levels = None
+
+                if isinstance(cached_sd, dict) and cached_sd.get("sd2"):
+                    # Predict structural variance at every kerma level using
+                    # the k² scaling anchored at k0
+                    k0 = decomp["k0"]
+                    all_kerma = np.array(kerma_vals, dtype=float)
+                    all_sd2_total = np.array(
+                        [v if v is not None else np.nan for v in cached_sd["sd2"]],
+                        dtype=float,
+                    )
+
+                    fp_ratio = decomp["sd2_fp"] / (k0**2) if k0 > 0 else 0.0
+                    sd2_fp_predicted = fp_ratio * all_kerma**2
+                    sd2_stoch_at_levels = all_sd2_total - sd2_fp_predicted
+
+                    # Combine with the explicit measurement at k0
+                    stoch_kerma = np.append(all_kerma, k0)
+                    stoch_vals = np.append(sd2_stoch_at_levels, decomp["sd2_stoch"])
+
+                    try:
+                        se2, beta, r2_e = _extrapolate_electronic_noise(
+                            stoch_kerma, stoch_vals,
+                        )
+                    except ValueError as ve:
+                        st.warning(f"Electronic noise extrapolation failed: {ve}")
+
+                # Store results
+                dc_state["explicit_decomp"] = {
+                    **decomp,
+                    "detrended": explicit_detrend,
+                    "detrend_area_pct": explicit_detrend_area if explicit_detrend else None,
+                    "sd2_electronic": float(se2) if se2 is not None else None,
+                    "beta_quantum": float(beta) if beta is not None else None,
+                    "r2_electronic_fit": float(r2_e) if r2_e is not None and not np.isnan(r2_e) else None,
+                    "sd2_fp_predicted": sd2_fp_predicted.tolist() if sd2_stoch_at_levels is not None else None,
+                    "sd2_stoch_at_levels": sd2_stoch_at_levels.tolist() if sd2_stoch_at_levels is not None else None,
+                    "kerma_levels": kerma_vals,
+                }
+                st.session_state["detector_conversion"] = dc_state
+            except Exception as e:
+                st.error(f"Explicit decomposition failed: {e}")
+
+    # --- Render cached explicit decomposition ---
+    cached_ex = dc_state.get("explicit_decomp")
+    if isinstance(cached_ex, dict) and cached_ex.get("sd2_total") is not None:
+        k0 = cached_ex["k0"]
+        N = cached_ex["n_frames"]
+        sd2_div = cached_ex.get("sd2_div", 0.0)
+        sd2_stoch_rel = cached_ex.get("sd2_stoch_rel", 0.0)
+        mean_sig = cached_ex.get("mean_signal", 0.0)
+        st.write(f"**Results at k\u2080 = {k0:.4g} \u00b5Gy  (N = {N} frames, \u27e8p\u27e9 = {mean_sig:.4g} \u00b5Gy)**")
+
+        col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+        with col_r1:
+            st.metric("S\u00b2 total", f"{cached_ex['sd2_total']:.4g}")
+        with col_r2:
+            st.metric("S\u00b2 div (relative)", f"{sd2_div:.4g}")
+        with col_r3:
+            st.metric("S\u00b2 stochastic", f"{cached_ex['sd2_stoch']:.4g}")
+        with col_r4:
+            st.metric("S\u00b2 fixed-pattern", f"{cached_ex['sd2_fp']:.4g}")
+
+        st.caption("Step-by-step conversion from division variance to absolute stochastic variance:")
+        st.latex(
+            rf"\overline{{S^{{2}}_{{\mathrm{{div}}}}}} = \frac{{1}}{{N}}\sum_{{n=1}}^{{{N}}} "
+            rf"S^{{2}}_{{\mathrm{{div}},n}} = {sd2_div:.4g}"
+        )
+        st.latex(
+            rf"S^{{2}}_{{\mathrm{{stoch,rel}}}} = \frac{{N}}{{N-1}}\,\overline{{S^{{2}}_{{\mathrm{{div}}}}}} "
+            rf"= \frac{{{N}}}{{{N-1}}}\times {sd2_div:.4g} = {sd2_stoch_rel:.4g}"
+        )
+        st.latex(
+            rf"S^{{2}}_{{\mathrm{{stoch}}}} = S^{{2}}_{{\mathrm{{stoch,rel}}}} \times \langle p \rangle^{{2}} "
+            rf"= {sd2_stoch_rel:.4g} \times {mean_sig:.4g}^{{2}} = {cached_ex['sd2_stoch']:.4g}"
+        )
+        st.latex(
+            rf"S^{{2}}_{{\mathrm{{fp}}}} = S^{{2}} - S^{{2}}_{{\mathrm{{stoch}}}} "
+            rf"= {cached_ex['sd2_total']:.4g} - {cached_ex['sd2_stoch']:.4g} "
+            rf"= {cached_ex['sd2_fp']:.4g}"
+        )
+
+        # Electronic noise results
+        se2 = cached_ex.get("sd2_electronic")
+        beta = cached_ex.get("beta_quantum")
+        r2_e = cached_ex.get("r2_electronic_fit")
+        if se2 is not None:
+            st.write("---")
+            st.write("**Electronic noise (extrapolation to k \u2192 0)**")
+            st.latex(
+                rf"S^{{2}}_{{\mathrm{{stoch}}}}(k) = {beta:.4g}\,k + {se2:.4g}"
+            )
+            if r2_e is not None:
+                st.write(f"R\u00b2 = {r2_e:.4f}")
+            col_e1, col_e2 = st.columns(2)
+            with col_e1:
+                st.metric("S\u00b2 electronic", f"{se2:.4g}")
+            with col_e2:
+                sd2_q_at_k0 = cached_ex["sd2_stoch"] - se2
+                st.metric(f"S\u00b2 quantum (at k\u2080={k0:.4g})", f"{sd2_q_at_k0:.4g}")
+
+        # --- Comprehensive decomposition plot ---
+        sd2_fp_pred = cached_ex.get("sd2_fp_predicted")
+        sd2_stoch_levels = cached_ex.get("sd2_stoch_at_levels")
+        k_levels = cached_ex.get("kerma_levels")
+        cached_sd = dc_state.get("sd2_fit")
+
+        if (sd2_fp_pred is not None and sd2_stoch_levels is not None
+                and k_levels is not None
+                and isinstance(cached_sd, dict) and cached_sd.get("sd2")):
+            k_all = np.array(k_levels, dtype=float)
+            sd2_total_all = np.array(
+                [v if v is not None else np.nan for v in cached_sd["sd2"]],
+                dtype=float,
+            )
+            fp_arr = np.array(sd2_fp_pred, dtype=float)
+            stoch_arr = np.array(sd2_stoch_levels, dtype=float)
+
+            k_smooth = np.linspace(max(k_all.min(), 0.01), k_all.max(), 200)
+            fp_ratio = cached_ex["sd2_fp"] / (k0**2) if k0 > 0 else 0.0
+            fp_smooth = fp_ratio * k_smooth**2
+
+            fig_dec, ax_dec = plt.subplots(figsize=(10, 6))
+            # Total
+            ax_dec.scatter(k_all, sd2_total_all, color='black', s=50, zorder=5, label='S\u00b2 total (data)')
+            # Structural
+            ax_dec.plot(k_smooth, fp_smooth, '--', color='C0', linewidth=1.5,
+                        label=f'S\u00b2 structural (k\u00b2 scaling from k\u2080)')
+            ax_dec.scatter(k_all, fp_arr, marker='s', color='C0', s=30, zorder=4, alpha=0.7)
+            ax_dec.scatter([k0], [cached_ex['sd2_fp']], marker='D', color='C0',
+                           s=80, zorder=6, edgecolors='black',
+                           label=f'S\u00b2 fp measured (k\u2080={k0:.4g})')
+            # Stochastic
+            ax_dec.scatter(k_all, stoch_arr, marker='^', color='C2', s=30, zorder=4,
+                           alpha=0.7, label='S\u00b2 stochastic (by subtraction)')
+            ax_dec.scatter([k0], [cached_ex['sd2_stoch']], marker='D', color='C2',
+                           s=80, zorder=6, edgecolors='black',
+                           label=f'S\u00b2 stoch measured (k\u2080={k0:.4g})')
+
+            if se2 is not None and beta is not None:
+                stoch_smooth = beta * k_smooth + se2
+                ax_dec.plot(k_smooth, stoch_smooth, '--', color='C2', linewidth=1.5,
+                            label=f'S\u00b2 stoch fit: {beta:.4g}\u00b7k + {se2:.4g}')
+                ax_dec.axhline(se2, linestyle=':', color='C1', linewidth=1.5,
+                               label=f'S\u00b2 electronic = {se2:.4g}')
+                q_smooth = beta * k_smooth
+                ax_dec.plot(k_smooth, q_smooth, '-.', color='C3', linewidth=1.5,
+                            label=f'S\u00b2 quantum: {beta:.4g}\u00b7k')
+
+            ax_dec.set_xlabel(r"$k$ (\u00b5Gy)", fontsize=12)
+            ax_dec.set_ylabel(r"$S^{2}$", fontsize=12)
+            ax_dec.set_title("Explicit Noise Decomposition (Monnin et al. 2014)")
+            ax_dec.legend(loc='best', fontsize=8)
+            ax_dec.grid(True, alpha=0.3)
+            st.pyplot(fig_dec)
+
+        # Per-frame variance table
+        with st.expander("Per-frame variance details"):
+            frame_data = {
+                "Frame": list(range(1, N + 1)),
+                "S\u00b2 total": [f"{v:.4g}" for v in cached_ex["sd2_per_frame"]],
+                "S\u00b2 div (relative)": [f"{v:.4g}" for v in cached_ex["sd2_div_per_frame"]],
+            }
+            st.table(frame_data)
 
     # CSV export
     output = io.StringIO()

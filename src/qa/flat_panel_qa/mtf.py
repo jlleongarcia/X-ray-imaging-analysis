@@ -305,33 +305,33 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
 
     # Calculate MTF
     st.markdown("---")
-    if not st.button("Calculate MTF", key="mtf_calculate_button"):
+    if st.button("Calculate MTF", key="mtf_calculate_button"):
+        all_mtf_results = []
+        with st.spinner(f"Calculating MTF for {len(image_arrays)} image(s)..."):
+            for img, fname in zip(image_arrays, filenames):
+                edge_roi = img[y0:y1, x0:x1]
+                mtf_result = calculate_mtf_metrics(edge_roi, pixel_spacing_avg)
+                
+                if "MTF_Status" not in mtf_result or "Error" not in mtf_result.get("MTF_Status", ""):
+                    mtf_result['filename'] = fname
+                    all_mtf_results.append(mtf_result)
+
+        if not all_mtf_results:
+            st.error("No MTF results were successfully calculated.")
+        else:
+            st.session_state['mtf_cache'] = {
+                'results': all_mtf_results,
+                'timestamp': time.time(),
+                'mtf_geometric_mean': _compute_geometric_mean_mtf(all_mtf_results)
+            }
+
+    # Render from cache (persists across reruns like detector_conversion.py)
+    if 'mtf_cache' not in st.session_state:
         st.info("Click 'Calculate MTF' to compute.")
         return
 
-    # Calculate MTF for all images
-    all_mtf_results = []
-    with st.spinner(f"Calculating MTF for {len(image_arrays)} image(s)..."):
-        for img, fname in zip(image_arrays, filenames):
-            edge_roi = img[y0:y1, x0:x1]
-            mtf_result = calculate_mtf_metrics(edge_roi, pixel_spacing_avg)
-            
-            if "MTF_Status" not in mtf_result or "Error" not in mtf_result.get("MTF_Status", ""):
-                mtf_result['filename'] = fname
-                all_mtf_results.append(mtf_result)
-
-    if not all_mtf_results:
-        st.error("No MTF results were successfully calculated.")
-        return
-
+    all_mtf_results = st.session_state['mtf_cache']['results']
     st.success("✅ MTF Analysis Complete!")
-    
-    # Store results in session state cache
-    st.session_state['mtf_cache'] = {
-        'results': all_mtf_results,
-        'timestamp': time.time(),
-        'mtf_geometric_mean': _compute_geometric_mean_mtf(all_mtf_results)
-    }
 
     # Display edge detection information for each image
     for mtf_results in all_mtf_results:

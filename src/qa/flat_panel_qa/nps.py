@@ -517,33 +517,34 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
 
     # Add button to trigger NPS calculation
     st.markdown("---")
-    if not st.button("Calculate NPS", key="nps_calculate_button"):
+    if st.button("Calculate NPS", key="nps_calculate_button"):
+        with st.spinner("Updating NPS..."):
+            big_roi = big_roi_pixels  # Use calculated value from 125 mm
+            small_roi = st.session_state['nps_small_roi']
+            nps_results_dict = calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col,
+                                                     additional_images=additional_arrays,
+                                                     big_roi_size=big_roi, small_roi_size=small_roi)
+            # Mark last recompute time
+            st.session_state['nps_last_updated'] = time.time()
+
+            if "NPS_Status" in nps_results_dict and "Error" in nps_results_dict["NPS_Status"]:
+                st.error(f"NPS Calculation Failed: {nps_results_dict['NPS_Status']}")
+            elif not (nps_results_dict and "NNPS_1D_chart_data" in nps_results_dict):
+                st.error("NPS calculation did not return expected results.")
+            else:
+                # Store results in session state cache with kerma value
+                st.session_state['nps_cache'] = {
+                    'results': nps_results_dict,
+                    'kerma_ugy': kerma_value,
+                    'timestamp': time.time()
+                }
+
+    # Render from cache (persists across reruns like detector_conversion.py)
+    if 'nps_cache' not in st.session_state:
         st.info("Click 'Calculate NPS' button to compute the Noise Power Spectrum.")
         return
 
-    with st.spinner("Updating NPS..."):
-        big_roi = big_roi_pixels  # Use calculated value from 125 mm
-        small_roi = st.session_state['nps_small_roi']
-        nps_results_dict = calculate_nps_metrics(image_array, pixel_spacing_row, pixel_spacing_col,
-                                                 additional_images=additional_arrays,
-                                                 big_roi_size=big_roi, small_roi_size=small_roi)
-        # Mark last recompute time
-        st.session_state['nps_last_updated'] = time.time()
-        
-        # Store results in session state cache with kerma value
-        if "NPS_Status" not in nps_results_dict or "Error" not in nps_results_dict.get("NPS_Status", ""):
-            st.session_state['nps_cache'] = {
-                'results': nps_results_dict,
-                'kerma_ugy': kerma_value,
-                'timestamp': time.time()
-            }
-
-    if "NPS_Status" in nps_results_dict and "Error" in nps_results_dict["NPS_Status"]:
-        st.error(f"NPS Calculation Failed: {nps_results_dict['NPS_Status']}")
-        return
-    if not (nps_results_dict and "NNPS_1D_chart_data" in nps_results_dict):
-        st.error("NPS calculation did not return expected results.")
-        return
+    nps_results_dict = st.session_state['nps_cache']['results']
 
     st.success("NPS Analysis Updated!")
     st.subheader("Normalized Noise Power Spectrum")

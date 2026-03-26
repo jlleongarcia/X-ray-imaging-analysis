@@ -718,10 +718,6 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
             if st.button("🔬 Calculate $$C_{T}(d)$$ & Fit Curve", type="primary"):
                 with st.spinner("Extracting central ROI, calculating threshold contrast, and fitting curve..."):
                     
-                    # Display image info for debugging
-                    st.info(f"📊 Image shape: {image.shape}, Value range: [{image.min():.2f}, {image.max():.2f}]" + 
-                            (" μGy" if is_kerma_image else " (pixel values)"))
-                    
                     # Generate contrast-detail curve
                     df_results, normalization_value = generate_contrast_detail_curve(
                         image, subroi_sizes, num_subrois, pixel_spacing, central_roi_size, norm_roi_size
@@ -731,7 +727,6 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
                         st.error("Could not generate results. Check grid sizes and image dimensions.")
                     else:
                         # Fit the curve
-                        st.info("Fitting contrast threshold model: $$C_{T}(d) = \\frac{c}{d^2} + \\frac{b}{d} + a$$")
                         fit_params, fit_quality = fit_contrast_threshold_curve(
                             df_results['diameter_mm'].values,
                             df_results['c_t_normalized'].values
@@ -739,153 +734,179 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
                         
                         units = "μGy" if is_kerma_image else "PV"
                         
-                        st.success(f"✓ Analysis complete for {len(df_results)} subROI sizes")
-                        
-                        if fit_params is not None:
-                            a, b, c = fit_params
-                            st.success(f"✓ Curve fitted successfully: $$C_{{T}}(d) = \\frac{{{c:.4f}}}{{d^2}} + \\frac{{{b:.4f}}}{{d}} + {a:.4f}$$")
-                            st.metric("R² (goodness of fit)", f"{fit_quality['r_squared']:.4f}")
-                        
-                        # Display normalization info
-                        st.info(f"**Normalization value** (mean of central {norm_roi_size}×{norm_roi_size} ROI): {normalization_value:.2f} {units}")
-                        
-                        st.markdown("---")
-                        
-                        # Display results table
-                        st.subheader("Results Table")
-                        
-                        # Format table for display
-                        display_df = df_results.copy()
-                        display_df['diameter_mm'] = display_df['diameter_mm'].round(3)
-                        display_df['c_t'] = display_df['c_t'].round(2)
-                        display_df['c_t_normalized'] = display_df['c_t_normalized'].round(4)
-                        display_df['sigma_chi'] = display_df['sigma_chi'].round(2)
-                        display_df['sigma_chi_normalized'] = display_df['sigma_chi_normalized'].round(4)
-                        
-                        # Create markdown table with LaTeX headers
-                        markdown_table = f"""
+                        # Store in session state (persists across reruns like detector_conversion.py)
+                        st.session_state['tcdd_cache'] = {
+                            'df_results': df_results,
+                            'normalization_value': normalization_value,
+                            'fit_params': fit_params,
+                            'fit_quality': fit_quality,
+                            'units': units,
+                            'image_shape': image.shape,
+                            'image_min': float(image.min()),
+                            'image_max': float(image.max()),
+                            'is_kerma_image': is_kerma_image,
+                        }
+
+            # Render from cache (persists across reruns like detector_conversion.py)
+            tcdd = st.session_state.get('tcdd_cache')
+            if tcdd is not None:
+                df_results = tcdd['df_results']
+                normalization_value = tcdd['normalization_value']
+                fit_params = tcdd['fit_params']
+                fit_quality = tcdd['fit_quality']
+                units = tcdd['units']
+
+                st.info(f"📊 Image shape: {tcdd['image_shape']}, Value range: [{tcdd['image_min']:.2f}, {tcdd['image_max']:.2f}]" +
+                        (" μGy" if tcdd['is_kerma_image'] else " (pixel values)"))
+
+                st.success(f"✓ Analysis complete for {len(df_results)} subROI sizes")
+                
+                if fit_params is not None:
+                    a, b, c = fit_params
+                    st.success(f"✓ Curve fitted successfully: $$C_{{T}}(d) = \\frac{{{c:.4f}}}{{d^2}} + \\frac{{{b:.4f}}}{{d}} + {a:.4f}$$")
+                    st.metric("R² (goodness of fit)", f"{fit_quality['r_squared']:.4f}")
+                
+                # Display normalization info
+                st.info(f"**Normalization value** (mean of central {norm_roi_size}×{norm_roi_size} ROI): {normalization_value:.2f} {units}")
+                
+                st.markdown("---")
+                
+                # Display results table
+                st.subheader("Results Table")
+                
+                # Format table for display
+                display_df = df_results.copy()
+                display_df['diameter_mm'] = display_df['diameter_mm'].round(3)
+                display_df['c_t'] = display_df['c_t'].round(2)
+                display_df['c_t_normalized'] = display_df['c_t_normalized'].round(4)
+                display_df['sigma_chi'] = display_df['sigma_chi'].round(2)
+                display_df['sigma_chi_normalized'] = display_df['sigma_chi_normalized'].round(4)
+                
+                # Create markdown table with LaTeX headers
+                markdown_table = f"""
 | **SubROI Size (px)** | **# SubROIs** | **Diameter $d$ (mm)** | **$C_{{T}}$ (random units)** | **$C_{{T}}$ (%)** | **$\\sigma$ (random units)** | **$\\sigma$ (%)** |
 |:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 """
-                        
-                        for _, row in display_df.iterrows():
-                            markdown_table += f"| {row['subroi_size_pixels']} | {row['n_subrois']} | {row['diameter_mm']:.3f} | {row['c_t']:.2f} | {row['c_t_normalized']:.4f} | {row['sigma_chi']:.2f} | {row['sigma_chi_normalized']:.4f} |\n"
-                        
-                        st.markdown(markdown_table)
-                        
-                        # Build enhanced CSV with metadata and array data
-                        csv_output = io.StringIO()
-                        csv_writer = csv.writer(csv_output)
+                
+                for _, row in display_df.iterrows():
+                    markdown_table += f"| {row['subroi_size_pixels']} | {row['n_subrois']} | {row['diameter_mm']:.3f} | {row['c_t']:.2f} | {row['c_t_normalized']:.4f} | {row['sigma_chi']:.2f} | {row['sigma_chi_normalized']:.4f} |\n"
+                
+                st.markdown(markdown_table)
+                
+                # Build enhanced CSV with metadata and array data
+                csv_output = io.StringIO()
+                csv_writer = csv.writer(csv_output)
 
-                        # Summary section
-                        csv_writer.writerow(['=== TCDD Statistical Method Summary ==='])
-                        csv_writer.writerow([])
-                        csv_writer.writerow(['Central ROI Size (px)', central_roi_size])
-                        csv_writer.writerow(['Normalization ROI Size (px)', norm_roi_size])
-                        csv_writer.writerow(['Number of SubROIs per size', num_subrois])
-                        csv_writer.writerow(['Pixel Spacing (mm)', f'{pixel_spacing:.4f}'])
-                        csv_writer.writerow(['Normalization Value', f'{normalization_value:.4f}'])
-                        csv_writer.writerow(['Units', units])
+                # Summary section
+                csv_writer.writerow(['=== TCDD Statistical Method Summary ==='])
+                csv_writer.writerow([])
+                csv_writer.writerow(['Central ROI Size (px)', central_roi_size])
+                csv_writer.writerow(['Normalization ROI Size (px)', norm_roi_size])
+                csv_writer.writerow(['Number of SubROIs per size', num_subrois])
+                csv_writer.writerow(['Pixel Spacing (mm)', f'{pixel_spacing:.4f}'])
+                csv_writer.writerow(['Normalization Value', f'{normalization_value:.4f}'])
+                csv_writer.writerow(['Units', units])
 
-                        if fit_params is not None:
-                            a, b, c = fit_params
-                            csv_writer.writerow([])
-                            csv_writer.writerow(['--- Fitted Model ---'])
-                            csv_writer.writerow(['Model', 'C_T(d) = c/d^2 + b/d + a'])
-                            csv_writer.writerow(['Parameter a', f'{a:.6f}'])
-                            csv_writer.writerow(['Parameter b', f'{b:.6f}'])
-                            csv_writer.writerow(['Parameter c', f'{c:.6f}'])
-                            csv_writer.writerow(['R2', f'{fit_quality["r_squared"]:.6f}'])
-                            csv_writer.writerow(['RMSE (%)', f'{fit_quality["rmse"]:.6f}'])
+                if fit_params is not None:
+                    a, b, c = fit_params
+                    csv_writer.writerow([])
+                    csv_writer.writerow(['--- Fitted Model ---'])
+                    csv_writer.writerow(['Model', 'C_T(d) = c/d^2 + b/d + a'])
+                    csv_writer.writerow(['Parameter a', f'{a:.6f}'])
+                    csv_writer.writerow(['Parameter b', f'{b:.6f}'])
+                    csv_writer.writerow(['Parameter c', f'{c:.6f}'])
+                    csv_writer.writerow(['R2', f'{fit_quality["r_squared"]:.6f}'])
+                    csv_writer.writerow(['RMSE (%)', f'{fit_quality["rmse"]:.6f}'])
 
-                            c_t_05_csv = contrast_threshold_model(np.array([0.5]), a, b, c)[0]
-                            c_t_20_csv = contrast_threshold_model(np.array([2.0]), a, b, c)[0]
-                            csv_writer.writerow(['C_T at 0.5 mm (%)', f'{c_t_05_csv:.6f}'])
-                            csv_writer.writerow(['C_T at 2.0 mm (%)', f'{c_t_20_csv:.6f}'])
+                    c_t_05_csv = contrast_threshold_model(np.array([0.5]), a, b, c)[0]
+                    c_t_20_csv = contrast_threshold_model(np.array([2.0]), a, b, c)[0]
+                    csv_writer.writerow(['C_T at 0.5 mm (%)', f'{c_t_05_csv:.6f}'])
+                    csv_writer.writerow(['C_T at 2.0 mm (%)', f'{c_t_20_csv:.6f}'])
 
-                            df_export = df_results.copy()
-                            df_export['c_t_fitted'] = contrast_threshold_model(
-                                df_export['diameter_mm'].values, a, b, c
-                            )
-                            df_export['residual'] = df_export['c_t_normalized'] - df_export['c_t_fitted']
-                        else:
-                            df_export = df_results.copy()
+                    df_export = df_results.copy()
+                    df_export['c_t_fitted'] = contrast_threshold_model(
+                        df_export['diameter_mm'].values, a, b, c
+                    )
+                    df_export['residual'] = df_export['c_t_normalized'] - df_export['c_t_fitted']
+                else:
+                    df_export = df_results.copy()
 
-                        csv_writer.writerow([])
-                        csv_writer.writerow(['=== Contrast-Detail Data ==='])
-                        csv_writer.writerow(df_export.columns.tolist())
-                        for _, csv_row in df_export.iterrows():
-                            csv_writer.writerow(csv_row.tolist())
+                csv_writer.writerow([])
+                csv_writer.writerow(['=== Contrast-Detail Data ==='])
+                csv_writer.writerow(df_export.columns.tolist())
+                for _, csv_row in df_export.iterrows():
+                    csv_writer.writerow(csv_row.tolist())
 
-                        st.download_button(
-                            label="📥 Download Results (CSV)",
-                            data=csv_output.getvalue(),
-                            file_name="tcdd_statistical_method_results.csv",
-                            mime="text/csv"
+                st.download_button(
+                    label="📥 Download Results (CSV)",
+                    data=csv_output.getvalue(),
+                    file_name="tcdd_statistical_method_results.csv",
+                    mime="text/csv"
+                )
+                
+                st.markdown("---")
+                
+                # Plot contrast-detail curve
+                st.subheader("Contrast-Detail Curve with Fitted Model")
+                fig_curve = plot_contrast_detail_curve(df_results, fit_params, fit_quality)
+                st.pyplot(fig_curve)
+                
+                # Download plot
+                buf = io.BytesIO()
+                fig_curve.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+                buf.seek(0)
+                st.download_button(
+                    label="📥 Download Plot (PNG)",
+                    data=buf,
+                    file_name="contrast_detail_curve.png",
+                    mime="image/png"
+                )
+                plt.close()
+                
+                st.markdown("---")
+                
+                # Display fitted parameters
+                if fit_params is not None:
+                    a, b, c = fit_params
+                    st.subheader("Fitted Model Parameters")
+                    col_p1, col_p2, col_p3 = st.columns(3)
+                    
+                    with col_p1:
+                        st.metric("Parameter a", f"{a:.6f}")
+                    with col_p2:
+                        st.metric("Parameter b", f"{b:.6f}")
+                    with col_p3:
+                        st.metric("Parameter c", f"{c:.6f}")
+                    
+                    st.latex(r"C_{th}(d) = \frac{" + f"{c:.4f}" + r"}{d^2} + \frac{" + f"{b:.4f}" + r"}{d} + " + f"{a:.4f}")
+                    
+                    st.markdown("---")
+                    
+                    # Calculate and display contrast at specific detail sizes
+                    st.subheader("Threshold Contrast at Standard Detail Sizes")
+                    st.caption("Calculated from fitted curve model")
+                    
+                    # Calculate C_T at 0.5 mm and 2 mm using fitted model
+                    c_t_05mm = contrast_threshold_model(np.array([0.5]), a, b, c)[0]
+                    c_t_2mm = contrast_threshold_model(np.array([2.0]), a, b, c)[0]
+                    
+                    col_d1, col_d2 = st.columns(2)
+                    
+                    with col_d1:
+                        st.metric(
+                            "$$C_T$$ at 0.5 mm", 
+                            f"{c_t_05mm:.4f} %",
+                            help="Threshold contrast for 0.5 mm detail diameter (from fitted curve)"
                         )
-                        
-                        st.markdown("---")
-                        
-                        # Plot contrast-detail curve
-                        st.subheader("Contrast-Detail Curve with Fitted Model")
-                        fig_curve = plot_contrast_detail_curve(df_results, fit_params, fit_quality)
-                        st.pyplot(fig_curve)
-                        
-                        # Download plot
-                        buf = io.BytesIO()
-                        fig_curve.savefig(buf, format='png', dpi=300, bbox_inches='tight')
-                        buf.seek(0)
-                        st.download_button(
-                            label="📥 Download Plot (PNG)",
-                            data=buf,
-                            file_name="contrast_detail_curve.png",
-                            mime="image/png"
+                    
+                    with col_d2:
+                        st.metric(
+                            "$$C_T$$ at 2.0 mm", 
+                            f"{c_t_2mm:.4f} %",
+                            help="Threshold contrast for 2 mm detail diameter (from fitted curve)"
                         )
-                        plt.close()
-                        
-                        st.markdown("---")
-                        
-                        # Display fitted parameters
-                        if fit_params is not None:
-                            st.subheader("Fitted Model Parameters")
-                            col_p1, col_p2, col_p3 = st.columns(3)
-                            
-                            with col_p1:
-                                st.metric("Parameter a", f"{a:.6f}")
-                            with col_p2:
-                                st.metric("Parameter b", f"{b:.6f}")
-                            with col_p3:
-                                st.metric("Parameter c", f"{c:.6f}")
-                            
-                            st.latex(r"C_{th}(d) = \frac{" + f"{c:.4f}" + r"}{d^2} + \frac{" + f"{b:.4f}" + r"}{d} + " + f"{a:.4f}")
-                            
-                            st.markdown("---")
-                            
-                            # Calculate and display contrast at specific detail sizes
-                            st.subheader("Threshold Contrast at Standard Detail Sizes")
-                            st.caption("Calculated from fitted curve model")
-                            
-                            # Calculate C_T at 0.5 mm and 2 mm using fitted model
-                            c_t_05mm = contrast_threshold_model(np.array([0.5]), a, b, c)[0]
-                            c_t_2mm = contrast_threshold_model(np.array([2.0]), a, b, c)[0]
-                            
-                            col_d1, col_d2 = st.columns(2)
-                            
-                            with col_d1:
-                                st.metric(
-                                    "$$C_T$$ at 0.5 mm", 
-                                    f"{c_t_05mm:.4f} %",
-                                    help="Threshold contrast for 0.5 mm detail diameter (from fitted curve)"
-                                )
-                            
-                            with col_d2:
-                                st.metric(
-                                    "$$C_T$$ at 2.0 mm", 
-                                    f"{c_t_2mm:.4f} %",
-                                    help="Threshold contrast for 2 mm detail diameter (from fitted curve)"
-                                )
-                        
-                        st.markdown("---")
+                
+                st.markdown("---")
                 
                 # Statistical summary
                 st.subheader("Statistical Summary")

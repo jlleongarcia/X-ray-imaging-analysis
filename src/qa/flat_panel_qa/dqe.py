@@ -316,14 +316,16 @@ def display_dqe_analysis_section():
     
     # Compute DQE button
     st.markdown("---")
-    if not st.button("Compute DQE", key="dqe_compute_button"):
-        st.info("Click 'Compute DQE' to calculate Detective Quantum Efficiency.")
-        return
-    
-    with st.spinner("Computing DQE..."):
-        dqe_results = compute_dqe_from_caches()
-    
+    if st.button("Compute DQE", key="dqe_compute_button"):
+        with st.spinner("Computing DQE..."):
+            dqe_results = compute_dqe_from_caches()
+        if dqe_results is not None:
+            st.session_state['dqe_cache'] = dqe_results
+
+    # Render from cache (persists across reruns like detector_conversion.py)
+    dqe_results = st.session_state.get('dqe_cache')
     if dqe_results is None:
+        st.info("Click 'Compute DQE' to calculate Detective Quantum Efficiency.")
         return
     
     st.success("✅ DQE Analysis Complete!")

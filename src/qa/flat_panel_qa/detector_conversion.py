@@ -690,9 +690,69 @@ def display_detector_conversion_section(uploaded_files: list[ImagePayload] | Non
     # CSV export
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(['filename', 'kerma', 'mpv', 'sd', 'ei'])
+
+    # --- Summary Section ---
+    writer.writerow(['=== Detector Conversion Summary ==='])
+    writer.writerow([])
+
+    # Detector Response Curve
+    cached_fit_csv = dc_state.get("fit", {})
+    if isinstance(cached_fit_csv, dict) and cached_fit_csv.get("coeffs") is not None:
+        writer.writerow(['--- Detector Response Curve (MPV vs Kerma) ---'])
+        writer.writerow(['Function', cached_fit_csv.get("formula", "")])
+        writer.writerow(['Method', cached_fit_csv.get("method", "")])
+        writer.writerow(['R2', cached_fit_csv.get("r2", "")])
+        writer.writerow(['Max Deviation from fit (%)', cached_fit_csv.get("max_deviation", "")])
+        writer.writerow([])
+
+    # EI Fit
+    cached_ei_csv = dc_state.get("ei_fit", {})
+    if isinstance(cached_ei_csv, dict) and cached_ei_csv.get("coeffs") is not None:
+        writer.writerow(['--- Exposition Index (EI) vs Kerma ---'])
+        writer.writerow(['Function', cached_ei_csv.get("formula", "")])
+        writer.writerow(['R2', cached_ei_csv.get("r2", "")])
+        writer.writerow(['Max Deviation from fit (%)', cached_ei_csv.get("max_deviation", "")])
+        writer.writerow([])
+
+    # Noise Decomposition
+    cached_sd2_csv = dc_state.get("sd2_fit", {})
+    if isinstance(cached_sd2_csv, dict) and cached_sd2_csv.get("coeffs") is not None:
+        writer.writerow(['--- Noise Decomposition (sigma^2 vs Kerma) ---'])
+        writer.writerow(['Function', cached_sd2_csv.get("formula", "")])
+        writer.writerow(['R2', cached_sd2_csv.get("r2", "")])
+        sd2_coeffs = cached_sd2_csv.get("coeffs", [])
+        if len(sd2_coeffs) == 3:
+            writer.writerow(['a (structural)', sd2_coeffs[0]])
+            writer.writerow(['b (quantum)', sd2_coeffs[1]])
+            writer.writerow(['c (electronic)', sd2_coeffs[2]])
+        if cached_sd2_csv.get("dominance_interval_exists"):
+            writer.writerow(['Quantum Noise Dominance Interval (uGy)',
+                           f'{cached_sd2_csv.get("k_min", "N/A")} - {cached_sd2_csv.get("k_max", "N/A")}'])
+        elif cached_sd2_csv.get("dominance_interval_degenerate"):
+            writer.writerow(['Quantum Noise Dominance Interval', 'Degenerate (k_min = k_max)'])
+        elif cached_sd2_csv.get("abc_positive") is False:
+            writer.writerow(['Quantum Noise Dominance Interval', 'Not computed (coefficients not all positive)'])
+        elif cached_sd2_csv.get("abc_positive"):
+            writer.writerow(['Quantum Noise Dominance Interval', 'Does not exist (b^2 <= a*c)'])
+        writer.writerow([])
+
+    writer.writerow([])
+
+    # --- Measurement Data Section ---
+    writer.writerow(['=== Measurement Data ==='])
+    writer.writerow(['filename', 'kerma_uGy', 'mpv', 'sd', 'ei'])
     for r in results["files"]:
         writer.writerow([r['filename'], r['kerma'], r['mpv'], r['sd'], r.get('ei')])
+
+    # Include sigma^2 data if available
+    if isinstance(cached_sd2_csv, dict) and cached_sd2_csv.get("sd2") is not None:
+        writer.writerow([])
+        writer.writerow(['=== Noise Variance (sigma^2 in kerma domain) ==='])
+        writer.writerow(['kerma_uGy', 'sigma_squared'])
+        sd2_values = cached_sd2_csv.get("sd2", [])
+        for k_val, s_val in zip(kerma_vals, sd2_values):
+            writer.writerow([k_val, s_val])
+
     st.download_button('Download results CSV', data=output.getvalue(), file_name='detector_conversion_results.csv')
 
     # Persist latest structured file summary each run

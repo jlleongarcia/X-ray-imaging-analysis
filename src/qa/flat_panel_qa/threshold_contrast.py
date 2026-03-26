@@ -17,6 +17,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Tuple, List, Dict
 import io
+import csv
 from scipy.optimize import curve_fit
 
 
@@ -772,9 +773,36 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
                         
                         st.markdown(markdown_table)
                         
-                        # Add fitted values to download
+                        # Build enhanced CSV with metadata and array data
+                        csv_output = io.StringIO()
+                        csv_writer = csv.writer(csv_output)
+
+                        # Summary section
+                        csv_writer.writerow(['=== TCDD Statistical Method Summary ==='])
+                        csv_writer.writerow([])
+                        csv_writer.writerow(['Central ROI Size (px)', central_roi_size])
+                        csv_writer.writerow(['Normalization ROI Size (px)', norm_roi_size])
+                        csv_writer.writerow(['Number of SubROIs per size', num_subrois])
+                        csv_writer.writerow(['Pixel Spacing (mm)', f'{pixel_spacing:.4f}'])
+                        csv_writer.writerow(['Normalization Value', f'{normalization_value:.4f}'])
+                        csv_writer.writerow(['Units', units])
+
                         if fit_params is not None:
                             a, b, c = fit_params
+                            csv_writer.writerow([])
+                            csv_writer.writerow(['--- Fitted Model ---'])
+                            csv_writer.writerow(['Model', 'C_T(d) = c/d^2 + b/d + a'])
+                            csv_writer.writerow(['Parameter a', f'{a:.6f}'])
+                            csv_writer.writerow(['Parameter b', f'{b:.6f}'])
+                            csv_writer.writerow(['Parameter c', f'{c:.6f}'])
+                            csv_writer.writerow(['R2', f'{fit_quality["r_squared"]:.6f}'])
+                            csv_writer.writerow(['RMSE (%)', f'{fit_quality["rmse"]:.6f}'])
+
+                            c_t_05_csv = contrast_threshold_model(np.array([0.5]), a, b, c)[0]
+                            c_t_20_csv = contrast_threshold_model(np.array([2.0]), a, b, c)[0]
+                            csv_writer.writerow(['C_T at 0.5 mm (%)', f'{c_t_05_csv:.6f}'])
+                            csv_writer.writerow(['C_T at 2.0 mm (%)', f'{c_t_20_csv:.6f}'])
+
                             df_export = df_results.copy()
                             df_export['c_t_fitted'] = contrast_threshold_model(
                                 df_export['diameter_mm'].values, a, b, c
@@ -782,12 +810,16 @@ def display_threshold_contrast_section(image_array: np.ndarray, pixel_spacing_ro
                             df_export['residual'] = df_export['c_t_normalized'] - df_export['c_t_fitted']
                         else:
                             df_export = df_results.copy()
-                        
-                        # Download CSV
-                        csv = df_export.to_csv(index=False)
+
+                        csv_writer.writerow([])
+                        csv_writer.writerow(['=== Contrast-Detail Data ==='])
+                        csv_writer.writerow(df_export.columns.tolist())
+                        for _, csv_row in df_export.iterrows():
+                            csv_writer.writerow(csv_row.tolist())
+
                         st.download_button(
                             label="📥 Download Results (CSV)",
-                            data=csv,
+                            data=csv_output.getvalue(),
                             file_name="tcdd_statistical_method_results.csv",
                             mime="text/csv"
                         )

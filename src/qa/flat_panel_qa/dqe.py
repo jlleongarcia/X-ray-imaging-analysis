@@ -2,6 +2,8 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import altair as alt
+import io
+import csv
 from typing import Optional, Dict, Any
 
 
@@ -383,12 +385,51 @@ def display_dqe_analysis_section():
     # Export option
     st.markdown("---")
     st.markdown("### Export DQE Data")
-    
-    csv_data = df_dqe.to_csv(index=False)
+
+    csv_output = io.StringIO()
+    csv_writer = csv.writer(csv_output)
+
+    # Summary section
+    csv_writer.writerow(['=== DQE Analysis Summary (IEC 62220-1-1:2015) ==='])
+    csv_writer.writerow([])
+    csv_writer.writerow(['Air Kerma (uGy)', f'{dqe_results["kerma_ugy"]:.2f}'])
+    csv_writer.writerow(['SNR^2_in (RQA5)', '30174 1/(mm^2 * uGy)'])
+    csv_writer.writerow(['DQE(0)', f'{dqe_results["dqe_0"]:.6f}'])
+
+    freq_50 = dqe_results['freq_at_50_percent']
+    freq_10 = dqe_results['freq_at_10_percent']
+    csv_writer.writerow([f'Freq at 50% DQE(0) ({dqe_results["x_axis_unit"]})',
+                        f'{freq_50:.4f}' if np.isfinite(freq_50) else 'N/A'])
+    csv_writer.writerow([f'Freq at 10% DQE(0) ({dqe_results["x_axis_unit"]})',
+                        f'{freq_10:.4f}' if np.isfinite(freq_10) else 'N/A'])
+
+    csv_writer.writerow([])
+    csv_writer.writerow(['--- MTF Source ---'])
+    mtf_csv_info = dqe_results['mtf_info']
+    csv_writer.writerow(['Vertical Edge File', mtf_csv_info['vertical_file']])
+    csv_writer.writerow(['Vertical Edge Angle (deg)', f'{mtf_csv_info["vertical_angle"]:.2f}'])
+    csv_writer.writerow(['Horizontal Edge File', mtf_csv_info['horizontal_file']])
+    csv_writer.writerow(['Horizontal Edge Angle (deg)', f'{mtf_csv_info["horizontal_angle"]:.2f}'])
+
+    csv_writer.writerow([])
+    csv_writer.writerow(['--- NPS Source ---'])
+    nps_csv_info = dqe_results['nps_info']
+    csv_writer.writerow(['Number of Images', nps_csv_info['num_images']])
+    nps_total = nps_csv_info['total_pixels']
+    csv_writer.writerow(['Total ROI Pixels', nps_total])
+
+    csv_writer.writerow([])
+
+    # DQE curve data
+    csv_writer.writerow(['=== DQE Curve Data ==='])
+    csv_writer.writerow([f'Frequency ({dqe_results["x_axis_unit"]})', 'DQE'])
+    for freq_val, dqe_val in zip(dqe_results['frequencies'], dqe_results['dqe_values']):
+        csv_writer.writerow([f'{freq_val:.6f}', f'{dqe_val:.6f}'])
+
     st.download_button(
-        label="Download DQE Data (CSV)",
-        data=csv_data,
-        file_name="dqe_data.csv",
+        label="\U0001f4e5 Download DQE Results (CSV)",
+        data=csv_output.getvalue(),
+        file_name="dqe_analysis_results.csv",
         mime="text/csv",
         key="dqe_download_button"
     )

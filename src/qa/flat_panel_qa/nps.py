@@ -3,6 +3,8 @@ import numpy as np
 from pylinac.core.nps import noise_power_spectrum_2d, noise_power_spectrum_1d, radial_average
 import pandas as pd
 import altair as alt
+import io
+import csv
 from typing import List, Optional
 import time
 from src.core.io.analysis_payload import ImagePayload
@@ -598,3 +600,68 @@ def display_nps_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
         nnps_value_2 = f"{target_info['value_2']:.3f}" if not np.isnan(target_info['value_2']) else "N/A"
         st.write(f"**NNPS at {target_info['target_f1']:.2f} {x_axis_unit_nps}**: {nnps_value_1} {target_units}")
         st.write(f"**NNPS at {target_info['target_f2']:.2f} {x_axis_unit_nps}**: {nnps_value_2} {target_units}")
+
+    # --- CSV Export ---
+    st.markdown("---")
+    csv_output = io.StringIO()
+    csv_writer = csv.writer(csv_output)
+
+    # Summary section
+    csv_writer.writerow(['=== NPS Analysis Summary ==='])
+    csv_writer.writerow([])
+    csv_writer.writerow(['Domain', domain_used])
+    csv_writer.writerow(['Images Used', nps_results_dict.get('used_images', '')])
+    csv_writer.writerow(['Total ROI Pixels', nps_results_dict.get('total_roi_pixels', '')])
+    csv_writer.writerow([f'Nyquist Frequency ({x_axis_unit_nps})', f'{nyquist_freq:.4f}'])
+    csv_writer.writerow(['NNPS Units', nnps_units])
+    csv_writer.writerow(['Air Kerma (uGy)', f'{kerma_value:.2f}'])
+
+    if 'NNPS_at_target_f' in nps_results_dict:
+        ti = nps_results_dict['NNPS_at_target_f']
+        csv_writer.writerow([f'NNPS at {ti["target_f1"]:.2f} {x_axis_unit_nps} ({nnps_units})',
+                            f'{ti["value_1"]:.6f}' if np.isfinite(ti['value_1']) else 'N/A'])
+        csv_writer.writerow([f'NNPS at {ti["target_f2"]:.2f} {x_axis_unit_nps} ({nnps_units})',
+                            f'{ti["value_2"]:.6f}' if np.isfinite(ti['value_2']) else 'N/A'])
+
+    csv_writer.writerow([])
+
+    # NNPS curve data
+    csv_writer.writerow(['=== NNPS Curve Data ==='])
+    nnps_1d_arr = nps_results_dict['NNPS_1D_chart_data']
+    nnps_x_arr = nps_results_dict.get('NNPS_X_chart_data')
+    nnps_y_arr = nps_results_dict.get('NNPS_Y_chart_data')
+    has_xy = nnps_x_arr is not None and nnps_y_arr is not None
+
+    nps_header = [x_axis_unit_nps, f'NNPS 1D Radial ({nnps_units})']
+    if has_xy:
+        nps_header.extend([f'Freq X-component ({x_axis_unit_nps})', f'NNPS X-component ({nnps_units})',
+                          f'Freq Y-component ({x_axis_unit_nps})', f'NNPS Y-component ({nnps_units})'])
+    csv_writer.writerow(nps_header)
+
+    nps_max_len = len(nnps_1d_arr)
+    if has_xy:
+        nps_max_len = max(nps_max_len, len(nnps_x_arr), len(nnps_y_arr))
+
+    for i in range(nps_max_len):
+        row = []
+        if i < len(nnps_1d_arr):
+            row.extend([f'{nnps_1d_arr[i][0]:.6f}', f'{nnps_1d_arr[i][1]:.6f}'])
+        else:
+            row.extend(['', ''])
+        if has_xy:
+            if i < len(nnps_x_arr):
+                row.extend([f'{nnps_x_arr[i][0]:.6f}', f'{nnps_x_arr[i][1]:.6f}'])
+            else:
+                row.extend(['', ''])
+            if i < len(nnps_y_arr):
+                row.extend([f'{nnps_y_arr[i][0]:.6f}', f'{nnps_y_arr[i][1]:.6f}'])
+            else:
+                row.extend(['', ''])
+        csv_writer.writerow(row)
+
+    st.download_button(
+        label="\U0001f4e5 Download NPS Results (CSV)",
+        data=csv_output.getvalue(),
+        file_name="nps_analysis_results.csv",
+        mime="text/csv"
+    )

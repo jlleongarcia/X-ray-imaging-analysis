@@ -2,6 +2,8 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import altair as alt
+import io
+import csv
 import time
 from src.core.io.analysis_payload import ImagePayload
 
@@ -460,3 +462,93 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
             
             if idx < len(all_mtf_results) - 1:
                 st.markdown("---")
+
+    # --- CSV Export ---
+    st.markdown("---")
+    csv_output = io.StringIO()
+    csv_writer = csv.writer(csv_output)
+
+    # Summary section
+    csv_writer.writerow(['=== MTF Analysis Summary ==='])
+    csv_writer.writerow([])
+    x_unit = all_mtf_results[0]['x_axis_unit']
+    csv_writer.writerow(['Image', 'Edge Angle (deg)', 'Orientation', 'Hough Confidence',
+                         'Edge Strength', 'Edge Points', f'MTF50 ({x_unit})',
+                         f'MTF10 ({x_unit})', f'Nyquist ({x_unit})'])
+    for r in all_mtf_results:
+        nyq = r.get('nyquist_freq', np.nan)
+        csv_writer.writerow([
+            r['filename'],
+            f"{r.get('edge_angle_deg', 0):.2f}",
+            'Vertical' if r.get('is_vertical') else 'Horizontal',
+            f"{r.get('hough_confidence', 0):.4f}",
+            f"{r.get('edge_strength', 0):.2f}",
+            r.get('edge_points_count', ''),
+            r.get('MTF50', 'N/A'),
+            r.get('MTF10', 'N/A'),
+            f"{nyq:.4f}" if isinstance(nyq, (int, float)) and np.isfinite(nyq) else 'N/A',
+        ])
+
+    # Geometric mean summary
+    geom_csv = st.session_state.get('mtf_cache', {}).get('mtf_geometric_mean')
+    if geom_csv and geom_csv.get('available'):
+        freq_g = np.array(geom_csv['frequencies'])
+        mtf_g = np.array(geom_csv['mtf_values'])
+        try:
+            mtf50_g = float(freq_g[np.where(mtf_g <= 0.5)[0][0]])
+        except (IndexError, Exception):
+            mtf50_g = 'N/A'
+        try:
+            mtf10_g = float(freq_g[np.where(mtf_g <= 0.1)[0][0]])
+        except (IndexError, Exception):
+            mtf10_g = 'N/A'
+        csv_writer.writerow(['Geometric Mean (Isotropic)', '', '', '', '', '',
+                            mtf50_g, mtf10_g, ''])
+
+    csv_writer.writerow([])
+
+    # MTF Curve data section
+    csv_writer.writerow(['=== MTF Curve Data ==='])
+    mtf_header = []
+    mtf_data_pairs = []
+    for r in all_mtf_results:
+        mtf_header.extend([f'Frequency ({x_unit}) - {r["filename"]}', f'MTF - {r["filename"]}'])
+        mtf_data_pairs.append((np.array(r['frequencies']), np.array(r['mtf_values'])))
+
+    if geom_csv and geom_csv.get('available'):
+        mtf_header.extend([f'Frequency ({x_unit}) - Geometric Mean', 'MTF - Geometric Mean'])
+        mtf_data_pairs.append((np.array(geom_csv['frequencies']), np.array(geom_csv['mtf_values'])))
+
+    mtf_max_len = max(len(p[0]) for p in mtf_data_pairs) if mtf_data_pairs else 0
+    csv_writer.writerow(mtf_header)
+    for i in range(mtf_max_len):
+        row = []
+        for freq_arr, mtf_arr in mtf_data_pairs:
+            if i < len(freq_arr):
+                row.extend([f"{freq_arr[i]:.6f}", f"{mtf_arr[i]:.6f}"])
+            else:
+                row.extend(['', ''])
+        csv_writer.writerow(row)
+
+    csv_writer.writerow([])
+
+    # ESF and LSF data sections
+    for r in all_mtf_results:
+        csv_writer.writerow([f'=== ESF - {r["filename"]} ==='])
+        csv_writer.writerow(['Position (pixels)', 'ESF'])
+        for row_data in r['esf_chart_data']:
+            csv_writer.writerow([f"{row_data[0]:.6f}", f"{row_data[1]:.6f}"])
+        csv_writer.writerow([])
+
+        csv_writer.writerow([f'=== LSF - {r["filename"]} ==='])
+        csv_writer.writerow(['Position', 'LSF'])
+        for row_data in r['lsf_chart_data']:
+            csv_writer.writerow([f"{row_data[0]:.6f}", f"{row_data[1]:.6f}"])
+        csv_writer.writerow([])
+
+    st.download_button(
+        label="\U0001f4e5 Download MTF Results (CSV)",
+        data=csv_output.getvalue(),
+        file_name="mtf_analysis_results.csv",
+        mime="text/csv"
+    )

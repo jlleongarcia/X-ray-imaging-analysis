@@ -231,6 +231,11 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
     else:
         slider_cols = [st.container() for _ in image_arrays]
 
+    # --- Set different defaults for ROI width/height in mm for each image ---
+    # You can customize these per image:
+    default_width_mm = [50, 100]  # e.g., 50mm for image 1, 100mm for image 2
+    default_height_mm = [100, 50] # e.g., 100mm for image 1, 50mm for image 2
+
     for idx, img in enumerate(image_arrays):
         h, w = img.shape
         suffix = f"_{idx+1}" if comparison_mode else ""
@@ -241,21 +246,40 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
             'width': f'mtf_roi_width{suffix}',
             'height': f'mtf_roi_height{suffix}'
         }
+        # Use provided pixel spacing from sidebar (always available)
+        px_spacing_row = float(pixel_spacing_row)
+        px_spacing_col = float(pixel_spacing_col)
+        # Compute default width/height in mm for this image
+        width_mm = default_width_mm[idx] if idx < len(default_width_mm) else default_width_mm[0]
+        height_mm = default_height_mm[idx] if idx < len(default_height_mm) else default_height_mm[0]
         # Initialize session state for each image
-        for k, key in keys.items():
-            if key not in st.session_state:
-                st.session_state[key] = 50 if 'center' in k else 20
+        if keys['center_x'] not in st.session_state:
+            st.session_state[keys['center_x']] = 50
+        if keys['center_y'] not in st.session_state:
+            st.session_state[keys['center_y']] = 50
+        if keys['width'] not in st.session_state:
+            st.session_state[keys['width']] = width_mm
+        if keys['height'] not in st.session_state:
+            st.session_state[keys['height']] = height_mm
         with slider_cols[idx]:
             st.markdown(f"**ROI for {filenames[idx]}**")
             st.slider("ROI Center X (%)", 0, 100, key=keys['center_x'], on_change=_bump_mtf_refresh)
             st.slider("ROI Center Y (%)", 0, 100, key=keys['center_y'], on_change=_bump_mtf_refresh)
-            st.slider("ROI Width (%)", 5, 100, key=keys['width'], on_change=_bump_mtf_refresh)
-            st.slider("ROI Height (%)", 5, 100, key=keys['height'], on_change=_bump_mtf_refresh)
+            # ROI Width (mm)
+            if keys['width'] in st.session_state:
+                st.number_input("ROI Width (mm)", min_value=1.0, max_value=1000.0, step=1.0, key=keys['width'], on_change=_bump_mtf_refresh)
+            else:
+                st.number_input("ROI Width (mm)", min_value=1.0, max_value=1000.0, value=width_mm, step=1.0, key=keys['width'], on_change=_bump_mtf_refresh)
+            # ROI Height (mm)
+            if keys['height'] in st.session_state:
+                st.number_input("ROI Height (mm)", min_value=1.0, max_value=1000.0, step=1.0, key=keys['height'], on_change=_bump_mtf_refresh)
+            else:
+                st.number_input("ROI Height (mm)", min_value=1.0, max_value=1000.0, value=height_mm, step=1.0, key=keys['height'], on_change=_bump_mtf_refresh)
         # Calculate pixel coordinates for ROI
+        width_px = max(10, int(st.session_state[keys['width']] / px_spacing_col))
+        height_px = max(10, int(st.session_state[keys['height']] / px_spacing_row))
         center_x_px = int(w * st.session_state[keys['center_x']] / 100)
         center_y_px = int(h * st.session_state[keys['center_y']] / 100)
-        width_px = max(10, int(w * st.session_state[keys['width']] / 100))
-        height_px = max(10, int(h * st.session_state[keys['height']] / 100))
         x0, x1 = max(0, center_x_px - width_px // 2), min(w, center_x_px + width_px // 2)
         y0, y1 = max(0, center_y_px - height_px // 2), min(h, center_y_px + height_px // 2)
         roi_params.append({'x0': x0, 'x1': x1, 'y0': y0, 'y1': y1, 'w': w, 'h': h, 'width_px': width_px, 'height_px': height_px, 'center_x_px': center_x_px, 'center_y_px': center_y_px})
@@ -301,7 +325,7 @@ def display_mtf_analysis_section(image_array, pixel_spacing_row, pixel_spacing_c
                 # Add semi-transparent red tint inside ROI
                 alpha = 0.3
                 img_with_roi[y0:y1, x0:x1, 0] = img_with_roi[y0:y1, x0:x1, 0] * (1 - alpha) + alpha
-                st.image(img_with_roi, caption=f"ROI: {width_px}×{height_px} px", use_container_width=True)
+                st.image(img_with_roi, caption=f"ROI: {width_mm}×{height_mm} mm", use_container_width=True)
                 st.caption(f"Position: ({x0}, {y0}) to ({x1}, {y1})")
 
 
